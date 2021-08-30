@@ -8,6 +8,14 @@
 #include <linux/bitops.h>
 #include <linux/if_vlan.h>
 
+#include "spdm_common_lib.h"
+#include <library/spdm_requester_lib.h>
+#include <library/spdm_transport_mctp_lib.h>
+#include <industry_standard/mctp.h>
+
+#include "spdm_temp_emu.c"
+
+
 char e1000_driver_name[] = "e1000";
 static char e1000_driver_string[] = "Intel(R) PRO/1000 Network Driver";
 #define DRV_VERSION "7.3.21-k8-NAPI"
@@ -223,6 +231,19 @@ struct net_device *e1000_get_hw_dev(struct e1000_hw *hw)
 static int __init e1000_init_module(void)
 {
 	printk(KERN_INFO "	DEBUG: e1000_init_module was called!");
+
+	void *spdm_context;
+	spdm_context = (void *)kmalloc(spdm_get_context_size(), GFP_KERNEL);
+
+	if (spdm_context == NULL) {
+		return NULL;
+		printk(KERN_INFO "	DEBUG: spdm_context failed!");
+	}
+
+
+	spdm_init_context(spdm_context);
+
+	printk(KERN_INFO "	DEBUG: spdm_init_context OK!");
 
 	int ret;
 	pr_info("%s - version %s\n", e1000_driver_string, e1000_driver_version);
