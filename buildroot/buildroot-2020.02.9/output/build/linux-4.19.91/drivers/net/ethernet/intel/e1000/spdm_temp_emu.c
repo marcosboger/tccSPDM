@@ -6,6 +6,7 @@
 
 // #include "spdm_emu.h"
 #include <library/spdm_transport_mctp_lib.h>
+#include <library/spdm_transport_pcidoe_lib.h>
 
 #define SOCKET_TRANSPORT_TYPE_MCTP 0x01
 #define SOCKET_TRANSPORT_TYPE_PCI_DOE 0x02

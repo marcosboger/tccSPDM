@@ -15,12 +15,20 @@
 
 #include "spdm_temp_emu.c"
 
+#define BLK_SPDM_DEBUG 1
+
+#if BLK_SPDM_DEBUG
+#define BLK_SPDM_PRINT(format,  ...) printk(format, ##__VA_ARGS__)
+#else
+#define BLK_SPDM_PRINT(format,  ...)
+#endif /*BLK_SPDM_DEBUG*/
 
 char e1000_driver_name[] = "e1000";
 static char e1000_driver_string[] = "Intel(R) PRO/1000 Network Driver";
 #define DRV_VERSION "7.3.21-k8-NAPI"
 const char e1000_driver_version[] = DRV_VERSION;
 static const char e1000_copyright[] = "Copyright (c) 1999-2006 Intel Corporation.";
+void* spdm_context;
 
 /* e1000_pci_tbl - PCI Device ID Table
  *
@@ -201,6 +209,8 @@ static struct pci_driver e1000_driver = {
 	.err_handler = &e1000_err_handler
 };
 
+void* virtblk_init_spdm(void);
+
 MODULE_AUTHOR("Intel Corporation, <linux.nics@intel.com>");
 MODULE_DESCRIPTION("Intel(R) PRO/1000 Network Driver");
 MODULE_LICENSE("GPL");
@@ -230,20 +240,20 @@ struct net_device *e1000_get_hw_dev(struct e1000_hw *hw)
  **/
 static int __init e1000_init_module(void)
 {
-	printk(KERN_INFO "	DEBUG: e1000_init_module was called!");
+	//printk(KERN_INFO "	DEBUG: e1000_init_module was called!");
 
-	void *spdm_context;
-	spdm_context = (void *)kmalloc(spdm_get_context_size(), GFP_KERNEL);
+	//void *spdm_context;
+	//spdm_context = (void *)kmalloc(spdm_get_context_size(), GFP_KERNEL);
 
-	if (spdm_context == NULL) {
-		return NULL;
-		printk(KERN_INFO "	DEBUG: spdm_context failed!");
-	}
+	//if (spdm_context == NULL) {
+	//	return NULL;
+		//printk(KERN_INFO "	DEBUG: spdm_context failed!");
+	//}
 
 
-	spdm_init_context(spdm_context);
+	//spdm_init_context(spdm_context);
 
-	printk(KERN_INFO "	DEBUG: spdm_init_context OK!");
+	//printk(KERN_INFO "	DEBUG: spdm_init_context OK!");
 
 	int ret;
 	pr_info("%s - version %s\n", e1000_driver_string, e1000_driver_version);
@@ -260,6 +270,138 @@ static int __init e1000_init_module(void)
 	}
 	return ret;
 }
+
+return_status spdm_blk_send_message(IN void *spdm_context,
+				       IN uintn request_size, IN void *request,
+				       IN uint64 timeout)
+{
+	//virtblk_send_arbitrary_data(global_spdm_disk, request, request_size, 0, NULL);
+	return RETURN_SUCCESS;
+}
+
+return_status spdm_blk_receive_message(IN void *spdm_context,
+					  IN OUT uintn *response_size,
+					  IN OUT void *response,
+					  IN uint64 timeout)
+{
+	//size_t size = *response_size;
+	//virtblk_get_arbitrary_data(global_spdm_disk, response, &size, 0, NULL);
+	//*response_size = size;
+	return RETURN_SUCCESS;
+}
+
+
+void* virtblk_init_spdm(void) {
+	void *spdm_context;
+	// uint8 index;
+	// return_status status;
+	// boolean res;
+	// void *data;
+	// uintn data_size;
+	spdm_data_parameter_t parameter;
+	uint8 data8;
+	uint16 data16;
+	uint32 data32;
+	// void *hash;
+	// uintn hash_size;
+	spdm_version_number_t spdm_version;
+
+	spdm_context = (void *)kmalloc(spdm_get_context_size(), GFP_KERNEL);
+	if (spdm_context == NULL) {
+		return NULL;
+	}
+
+	spdm_init_context(spdm_context);
+	spdm_register_device_io_func(spdm_context, spdm_blk_send_message,
+				     spdm_blk_receive_message);
+	if (m_use_transport_layer == SOCKET_TRANSPORT_TYPE_MCTP) {
+		spdm_register_transport_layer_func(
+			spdm_context, spdm_transport_mctp_encode_message,
+			spdm_transport_mctp_decode_message);
+	} else if (m_use_transport_layer == SOCKET_TRANSPORT_TYPE_PCI_DOE) {
+		// not supported
+		return NULL;
+		 spdm_register_transport_layer_func(
+		 	spdm_context, spdm_transport_pci_doe_encode_message,
+		 	spdm_transport_pci_doe_decode_message);
+	} else {
+		return NULL;
+	}
+
+	// if (m_load_state_file_name != NULL) {
+	// 	spdm_load_negotiated_state(spdm_context, TRUE);
+	// }
+
+	if (m_use_version != SPDM_MESSAGE_VERSION_11) {
+		zero_mem(&parameter, sizeof(parameter));
+		parameter.location = SPDM_DATA_LOCATION_LOCAL;
+		spdm_version.major_version = (m_use_version >> 4) & 0xF;
+		spdm_version.minor_version = m_use_version & 0xF;
+		spdm_version.alpha = 0;
+		spdm_version.update_version_number = 0;
+		spdm_set_data(spdm_context, SPDM_DATA_SPDM_VERSION, &parameter,
+			      &spdm_version, sizeof(spdm_version));
+	}
+
+	if (m_use_secured_message_version != SPDM_MESSAGE_VERSION_11) {
+		zero_mem(&parameter, sizeof(parameter));
+		if (m_use_secured_message_version != 0) {
+			parameter.location = SPDM_DATA_LOCATION_LOCAL;
+			spdm_version.major_version =
+				(m_use_secured_message_version >> 4) & 0xF;
+			spdm_version.minor_version =
+				m_use_secured_message_version & 0xF;
+			spdm_version.alpha = 0;
+			spdm_version.update_version_number = 0;
+			spdm_set_data(spdm_context,
+				      SPDM_DATA_SECURED_MESSAGE_VERSION,
+				      &parameter, &spdm_version,
+				      sizeof(spdm_version));
+		} else {
+			spdm_set_data(spdm_context,
+				      SPDM_DATA_SECURED_MESSAGE_VERSION,
+				      &parameter, NULL, 0);
+		}
+	}
+
+	zero_mem(&parameter, sizeof(parameter));
+	parameter.location = SPDM_DATA_LOCATION_LOCAL;
+
+	data8 = 0;
+	spdm_set_data(spdm_context, SPDM_DATA_CAPABILITY_CT_EXPONENT,
+		      &parameter, &data8, sizeof(data8));
+	data32 = m_use_requester_capability_flags;
+	if (m_use_capability_flags != 0) {
+		data32 = m_use_capability_flags;
+	}
+	spdm_set_data(spdm_context, SPDM_DATA_CAPABILITY_FLAGS, &parameter,
+		      &data32, sizeof(data32));
+
+	data8 = m_support_measurement_spec;
+	spdm_set_data(spdm_context, SPDM_DATA_MEASUREMENT_SPEC, &parameter,
+		      &data8, sizeof(data8));
+	data32 = m_support_asym_algo;
+	spdm_set_data(spdm_context, SPDM_DATA_BASE_ASYM_ALGO, &parameter,
+		      &data32, sizeof(data32));
+	data32 = m_support_hash_algo;
+	spdm_set_data(spdm_context, SPDM_DATA_BASE_HASH_ALGO, &parameter,
+		      &data32, sizeof(data32));
+	data16 = m_support_dhe_algo;
+	spdm_set_data(spdm_context, SPDM_DATA_DHE_NAME_GROUP, &parameter,
+		      &data16, sizeof(data16));
+	data16 = m_support_aead_algo;
+	spdm_set_data(spdm_context, SPDM_DATA_AEAD_CIPHER_SUITE, &parameter,
+		      &data16, sizeof(data16));
+	data16 = m_support_req_asym_algo;
+	spdm_set_data(spdm_context, SPDM_DATA_REQ_BASE_ASYM_ALG, &parameter,
+		      &data16, sizeof(data16));
+	data16 = m_support_key_schedule_algo;
+	spdm_set_data(spdm_context, SPDM_DATA_KEY_SCHEDULE, &parameter, &data16,
+		      sizeof(data16));
+
+	return spdm_context;
+}
+
 
 module_init(e1000_init_module);
 
@@ -945,6 +1087,8 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	struct net_device *netdev;
 	struct e1000_adapter *adapter = NULL;
 	struct e1000_hw *hw;
+	
+	return_status status;
 
 	static int cards_found;
 	static int global_quad_port_a; /* global ksp3 port a indication */
@@ -1240,6 +1384,17 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	netif_carrier_off(netdev);
 
 	e_info(probe, "Intel(R) PRO/1000 Network Connection\n");
+	
+	spdm_context = virtblk_init_spdm();
+	// get_version, get_capabilities, and negotiate_algorithms
+	status = spdm_init_connection(
+			spdm_context,
+			(m_exe_connection & EXE_CONNECTION_VERSION_ONLY) != 0);
+	if (RETURN_ERROR(status)) {
+		printk(KERN_ALERT "Error on spdm_init_connection.");
+	} else {
+		printk(KERN_ALERT "SpdmContext initialized.");
+	}
 
 	cards_found++;
 	return 0;
@@ -3123,7 +3278,7 @@ static int e1000_maybe_stop_tx(struct net_device *netdev,
 static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 				    struct net_device *netdev)
 {
-	printk(KERN_INFO "	DEBUG: e1000_xmit_frame was called!");
+	//printk(KERN_INFO "	DEBUG: e1000_xmit_frame was called!");
 	
 	struct e1000_adapter *adapter = netdev_priv(netdev);
 	struct e1000_hw *hw = &adapter->hw;
@@ -3146,17 +3301,47 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	 */
 	tx_ring = adapter->tx_ring;
 
+	//struct sk_buff *skb_spdm;
+	//skb_spdm = alloc_skb(len, GFP_KERNEL);
+	//skb_spdm = skb;
+	//printk(KERN_INFO "	headlen: %d", len);
+	//skb_put(skb, 5);
+	//printk(KERN_INFO "	headlen + 5: %d", skb_headlen(skb));
+	//len = skb_headlen(skb);
+	//skb_spdm->data = skb->data;
+	//int len_spdm = skb_headlen(skb_spdm);
+	//int teste = 0;
+
+	/*for (teste = 0; teste < len; teste++){
+		if(teste == len - 1 && skb->data_len == 0){
+			skb->data[teste] = 'R';
+		}
+		if(teste == len - 2 && skb->data_len == 0){
+			skb->data[teste] = 'E';
+		}
+		if(teste == len - 3 && skb->data_len == 0){
+			skb->data[teste] = 'G';
+		}
+		if(teste == len - 4 && skb->data_len == 0){
+			skb->data[teste] = 'O';
+		}
+		if(teste == len - 5 && skb->data_len == 0){
+			skb->data[teste] = 'B';
+		}
+	}*/	
+
+	//skb = skb_spdm;
+
 	/* Alteração para bugar pacote saindo */
 
-	/*unsigned char *buffer_start = skb->data;
-	int teste = 0;
-   	printk(KERN_INFO "    DEBUG KERNEL: len:%d", len);
+	//unsigned char *buffer_start = skb->data;
+	//int teste = 0;
+   	//printk(KERN_INFO "    DEBUG KERNEL: len:%d", len);
 
-		for(teste = 0; teste < len; teste++){
-			printk(KERN_INFO "	buffer_start[%d]: %c", teste, buffer_start[teste]);
-			buffer_start[teste] = buffer_start[teste] + 1;
-		}
-	*/
+	//	for(teste = 0; teste < len; teste++){
+			//printk(KERN_INFO "	buffer_start[%d]: %c", teste, buffer_start[teste]);
+	//		buffer_start[teste] = buffer_start[teste] + 1;
+	//	}
 	/* On PCI/PCI-X HW, if packet size is less than ETH_ZLEN,
 	 * packets may get corrupted during padding by HW.
 	 * To WA this issue, pad all small packets manually.
@@ -3834,7 +4019,7 @@ static irqreturn_t e1000_intr(int irq, void *data)
  **/
 static int e1000_clean(struct napi_struct *napi, int budget)
 {
-	printk(KERN_INFO "	DEBUG: e1000_clean was called!");
+	//printk(KERN_INFO "	DEBUG: e1000_clean was called!");
 
 	struct e1000_adapter *adapter = container_of(napi, struct e1000_adapter,
 						     napi);
@@ -4443,12 +4628,12 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 
 		/*Alteração para bugar buffer de recebimento*/
 
-		unsigned char *buffer_start = skb->data;
+		/*unsigned char *buffer_start = skb->data;
 		int teste = 0;
 
 		for(teste = 0; teste < length; teste++){
 			buffer_start[teste] = buffer_start[teste] + 1; 
-		}
+		}*/
 
 		/*printk(KERN_INFO "	DEBUG: e1000_clean_rx_irq was called, skb->data_len: %d", skb->data_len);
 		printk(KERN_INFO "	DEBUG: e1000_clean_rx_irq was called, skb->data: %s", skb->data);
