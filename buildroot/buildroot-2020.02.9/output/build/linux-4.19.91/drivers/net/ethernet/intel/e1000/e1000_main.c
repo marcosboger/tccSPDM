@@ -15,20 +15,20 @@
 
 #include "spdm_temp_emu.c"
 
-#define BLK_SPDM_DEBUG 1
+#define E1000_SPDM_DEBUG 1
 
-#if BLK_SPDM_DEBUG
-#define BLK_SPDM_PRINT(format,  ...) printk(format, ##__VA_ARGS__)
+#if E1000_SPDM_DEBUG
+#define E1000_SPDM_PRINT(format,  ...) printk(format, ##__VA_ARGS__)
 #else
-#define BLK_SPDM_PRINT(format,  ...)
-#endif /*BLK_SPDM_DEBUG*/
+#define E1000_SPDM_PRINT(format,  ...)
+#endif /*E1000_SPDM_DEBUG*/
 
 char e1000_driver_name[] = "e1000";
 static char e1000_driver_string[] = "Intel(R) PRO/1000 Network Driver";
 #define DRV_VERSION "7.3.21-k8-NAPI"
 const char e1000_driver_version[] = DRV_VERSION;
 static const char e1000_copyright[] = "Copyright (c) 1999-2006 Intel Corporation.";
-void* spdm_context;
+void* global_spdm_context;
 
 /* e1000_pci_tbl - PCI Device ID Table
  *
@@ -209,7 +209,10 @@ static struct pci_driver e1000_driver = {
 	.err_handler = &e1000_err_handler
 };
 
-void* virtblk_init_spdm(void);
+struct net_device *global_spdm_netdev = NULL;
+static int e1000_send_arbitrary_data(struct net_device*, char*, size_t);
+void* e1000_init_spdm(void);
+
 
 MODULE_AUTHOR("Intel Corporation, <linux.nics@intel.com>");
 MODULE_DESCRIPTION("Intel(R) PRO/1000 Network Driver");
@@ -271,27 +274,60 @@ static int __init e1000_init_module(void)
 	return ret;
 }
 
-return_status spdm_blk_send_message(IN void *spdm_context,
+return_status spdm_e1000_send_message(IN void *spdm_context,
 				       IN uintn request_size, IN void *request,
 				       IN uint64 timeout)
 {
-	//virtblk_send_arbitrary_data(global_spdm_disk, request, request_size, 0, NULL);
+	e1000_send_arbitrary_data(global_spdm_netdev, request, request_size);
 	return RETURN_SUCCESS;
 }
 
-return_status spdm_blk_receive_message(IN void *spdm_context,
+return_status spdm_e1000_receive_message(IN void *spdm_context,
 					  IN OUT uintn *response_size,
 					  IN OUT void *response,
 					  IN uint64 timeout)
 {
 	//size_t size = *response_size;
-	//virtblk_get_arbitrary_data(global_spdm_disk, response, &size, 0, NULL);
+	//e1000_get_arbitrary_data(global_spdm_disk, response, &size);
 	//*response_size = size;
 	return RETURN_SUCCESS;
 }
 
+static int e1000_send_arbitrary_data(struct net_device *netdev, char *some_data, size_t size)
+{
+	struct sk_buff *skb_spdm;
+	skb_spdm = alloc_skb(size, GFP_KERNEL);
+	printk(KERN_ALERT "		SPDM size: %X", size);
+	skb_put_data(skb_spdm, some_data, size);
+	int i;
+	for(i = 0; i < size; i++)
+		printk(KERN_ALERT "		SPDM skb_spdm->data[%d] = 0x%02X %c", i, skb_spdm->data[i], skb_spdm->data[i]);
+	e1000_xmit_frame(skb_spdm, global_spdm_netdev);
+	/*struct virtio_blk *vblk = disk->private_data;
+	struct request_queue *q = vblk->disk->queue;
+	struct request *req;
+	int err;
 
-void* virtblk_init_spdm(void) {
+	req = blk_get_request(q, op | REQ_OP_WRITE, 0);
+	if (IS_ERR(req))
+		return PTR_ERR(req);
+
+	err = blk_rq_map_kern(q, req, some_data, size, GFP_KERNEL);
+	if (err)
+		goto out;
+
+	req->__sector = pos;
+	req->spdm_original_req = main_req;
+	blk_execute_rq(vblk->disk->queue, vblk->disk, req, true);
+
+	// not sure what this does
+	err = blk_status_to_errno(virtblk_result(blk_mq_rq_to_pdu(req)));
+out:
+	blk_put_request(req);
+	return err;*/
+}
+
+void* e1000_init_spdm(void) {
 	void *spdm_context;
 	// uint8 index;
 	// return_status status;
@@ -312,8 +348,8 @@ void* virtblk_init_spdm(void) {
 	}
 
 	spdm_init_context(spdm_context);
-	spdm_register_device_io_func(spdm_context, spdm_blk_send_message,
-				     spdm_blk_receive_message);
+	spdm_register_device_io_func(spdm_context, spdm_e1000_send_message,
+				     spdm_e1000_receive_message);
 	if (m_use_transport_layer == SOCKET_TRANSPORT_TYPE_MCTP) {
 		spdm_register_transport_layer_func(
 			spdm_context, spdm_transport_mctp_encode_message,
@@ -1385,10 +1421,12 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	e_info(probe, "Intel(R) PRO/1000 Network Connection\n");
 	
-	spdm_context = virtblk_init_spdm();
+	global_spdm_context = e1000_init_spdm();
+	global_spdm_netdev = netdev;
+
 	// get_version, get_capabilities, and negotiate_algorithms
 	status = spdm_init_connection(
-			spdm_context,
+			global_spdm_context,
 			(m_exe_connection & EXE_CONNECTION_VERSION_ONLY) != 0);
 	if (RETURN_ERROR(status)) {
 		printk(KERN_ALERT "Error on spdm_init_connection.");
@@ -3010,7 +3048,11 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 	unsigned int offset = 0, size, count = 0, i;
 	unsigned int f, bytecount, segs;
 
+	printk(KERN_INFO "	Passou aqui 5");
+
 	i = tx_ring->next_to_use;
+
+	printk(KERN_INFO "	Passou aqui 6");
 
 	while (len) {
 		buffer_info = &tx_ring->buffer_info[i];
@@ -3026,6 +3068,8 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 			size -= 4;
 		}
 
+		printk(KERN_INFO "	Passou aqui 7");
+
 		/* Workaround for premature desc write-backs
 		 * in TSO mode.  Append 4-byte sentinel desc
 		 */
@@ -3040,6 +3084,8 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 			     (size > 2015) && count == 0))
 			size = 2015;
 
+		printk(KERN_INFO "	Passou aqui 8");
+
 		/* Workaround for potential 82544 hang in PCI-X.  Avoid
 		 * terminating buffers within evenly-aligned dwords.
 		 */
@@ -3048,13 +3094,18 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 		   size > 4))
 			size -= 4;
 
+		printk(KERN_INFO "	Passou aqui 9");
+		printk(KERN_INFO "  pdev->dev->dma_mask %X", pdev->dev.dma_mask);
+
 		buffer_info->length = size;
+		printk(KERN_INFO "	Passou Buffer Info");
 		/* set time_stamp *before* dma to help avoid a possible race */
 		buffer_info->time_stamp = jiffies;
 		buffer_info->mapped_as_page = false;
 		buffer_info->dma = dma_map_single(&pdev->dev,
 						  skb->data + offset,
 						  size, DMA_TO_DEVICE);
+		printk(KERN_INFO "	Passou aqui 10");
 		if (dma_mapping_error(&pdev->dev, buffer_info->dma))
 			goto dma_error;
 		buffer_info->next_to_watch = i;
@@ -3068,6 +3119,8 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 				i = 0;
 		}
 	}
+
+	
 
 	for (f = 0; f < nr_frags; f++) {
 		const struct skb_frag_struct *frag;
@@ -3117,6 +3170,8 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 		}
 	}
 
+	printk(KERN_INFO "	Passou aqui 8");
+
 	segs = skb_shinfo(skb)->gso_segs ?: 1;
 	/* multiply data chunks by size of headers */
 	bytecount = ((segs - 1) * skb_headlen(skb)) + skb->len;
@@ -3125,6 +3180,8 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 	tx_ring->buffer_info[i].segs = segs;
 	tx_ring->buffer_info[i].bytecount = bytecount;
 	tx_ring->buffer_info[first].next_to_watch = i;
+
+	printk(KERN_INFO "	Passou aqui 9");
 
 	return count;
 
@@ -3334,20 +3391,22 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 
 	/* Alteração para bugar pacote saindo */
 
-	//unsigned char *buffer_start = skb->data;
-	//int teste = 0;
+	unsigned char *buffer_start = skb->data;
+	int teste = 0;
    	//printk(KERN_INFO "    DEBUG KERNEL: len:%d", len);
 
-	//	for(teste = 0; teste < len; teste++){
-			//printk(KERN_INFO "	buffer_start[%d]: %c", teste, buffer_start[teste]);
+		for(teste = 0; teste < len; teste++){
+			printk(KERN_INFO "	buffer_start[%d]: %02X", teste, buffer_start[teste]);
 	//		buffer_start[teste] = buffer_start[teste] + 1;
-	//	}
+		}
 	/* On PCI/PCI-X HW, if packet size is less than ETH_ZLEN,
 	 * packets may get corrupted during padding by HW.
 	 * To WA this issue, pad all small packets manually.
 	 */
 	if (eth_skb_pad(skb))
 		return NETDEV_TX_OK;
+
+	printk(KERN_INFO "	Passou aqui 1");
 
 	mss = skb_shinfo(skb)->gso_size;
 	/* The controller does a simple calculation to
@@ -3357,6 +3416,9 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	 * overrun the FIFO, adjust the max buffer len if mss
 	 * drops.
 	 */
+
+	printk(KERN_INFO "	Passou aqui 2");
+
 	if (mss) {
 		u8 hdr_len;
 		max_per_txd = min(mss << 2, max_per_txd);
@@ -3393,6 +3455,8 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 			}
 		}
 	}
+
+	printk(KERN_INFO "	Passou aqui 3");
 
 	/* reserve a descriptor for the offload context */
 	if ((mss) || (skb->ip_summed == CHECKSUM_PARTIAL))
@@ -3463,8 +3527,12 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	if (unlikely(skb->no_fcs))
 		tx_flags |= E1000_TX_FLAGS_NO_FCS;
 
+	printk(KERN_INFO "	Passou aqui 4");
+
 	count = e1000_tx_map(adapter, tx_ring, skb, first, max_per_txd,
 			     nr_frags, mss);
+
+	printk(KERN_INFO "	Passou aqui 5");
 
 	if (count) {
 		/* The descriptors needed is higher than other Intel drivers
