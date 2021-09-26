@@ -1123,8 +1123,6 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	struct net_device *netdev;
 	struct e1000_adapter *adapter = NULL;
 	struct e1000_hw *hw;
-	
-	return_status status;
 
 	static int cards_found;
 	static int global_quad_port_a; /* global ksp3 port a indication */
@@ -1424,16 +1422,6 @@ static int e1000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	global_spdm_context = e1000_init_spdm();
 	global_spdm_netdev = netdev;
 
-	// get_version, get_capabilities, and negotiate_algorithms
-	status = spdm_init_connection(
-			global_spdm_context,
-			(m_exe_connection & EXE_CONNECTION_VERSION_ONLY) != 0);
-	if (RETURN_ERROR(status)) {
-		printk(KERN_ALERT "Error on spdm_init_connection.");
-	} else {
-		printk(KERN_ALERT "SpdmContext initialized.");
-	}
-
 	cards_found++;
 	return 0;
 
@@ -1572,6 +1560,8 @@ int e1000_open(struct net_device *netdev)
 	struct e1000_hw *hw = &adapter->hw;
 	int err;
 
+	return_status status;
+
 	/* disallow open during test */
 	if (test_bit(__E1000_TESTING, &adapter->flags))
 		return -EBUSY;
@@ -1589,6 +1579,16 @@ int e1000_open(struct net_device *netdev)
 		goto err_setup_rx;
 
 	e1000_power_up_phy(adapter);
+
+	// get_version, get_capabilities, and negotiate_algorithms
+	status = spdm_init_connection(
+			global_spdm_context,
+			(m_exe_connection & EXE_CONNECTION_VERSION_ONLY) != 0);
+	if (RETURN_ERROR(status)) {
+		printk(KERN_ALERT "Error on spdm_init_connection.");
+	} else {
+		printk(KERN_ALERT "SpdmContext initialized.");
+	}
 
 	adapter->mng_vlan_id = E1000_MNG_VLAN_NONE;
 	if ((hw->mng_cookie.status &
@@ -3048,11 +3048,9 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 	unsigned int offset = 0, size, count = 0, i;
 	unsigned int f, bytecount, segs;
 
-	printk(KERN_INFO "	Passou aqui 5");
 
 	i = tx_ring->next_to_use;
 
-	printk(KERN_INFO "	Passou aqui 6");
 
 	while (len) {
 		buffer_info = &tx_ring->buffer_info[i];
@@ -3068,8 +3066,6 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 			size -= 4;
 		}
 
-		printk(KERN_INFO "	Passou aqui 7");
-
 		/* Workaround for premature desc write-backs
 		 * in TSO mode.  Append 4-byte sentinel desc
 		 */
@@ -3084,7 +3080,6 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 			     (size > 2015) && count == 0))
 			size = 2015;
 
-		printk(KERN_INFO "	Passou aqui 8");
 
 		/* Workaround for potential 82544 hang in PCI-X.  Avoid
 		 * terminating buffers within evenly-aligned dwords.
@@ -3094,18 +3089,14 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 		   size > 4))
 			size -= 4;
 
-		printk(KERN_INFO "	Passou aqui 9");
-		printk(KERN_INFO "  pdev->dev->dma_mask %X", pdev->dev.dma_mask);
 
 		buffer_info->length = size;
-		printk(KERN_INFO "	Passou Buffer Info");
 		/* set time_stamp *before* dma to help avoid a possible race */
 		buffer_info->time_stamp = jiffies;
 		buffer_info->mapped_as_page = false;
 		buffer_info->dma = dma_map_single(&pdev->dev,
 						  skb->data + offset,
 						  size, DMA_TO_DEVICE);
-		printk(KERN_INFO "	Passou aqui 10");
 		if (dma_mapping_error(&pdev->dev, buffer_info->dma))
 			goto dma_error;
 		buffer_info->next_to_watch = i;
@@ -3170,7 +3161,6 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 		}
 	}
 
-	printk(KERN_INFO "	Passou aqui 8");
 
 	segs = skb_shinfo(skb)->gso_segs ?: 1;
 	/* multiply data chunks by size of headers */
@@ -3181,7 +3171,6 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 	tx_ring->buffer_info[i].bytecount = bytecount;
 	tx_ring->buffer_info[first].next_to_watch = i;
 
-	printk(KERN_INFO "	Passou aqui 9");
 
 	return count;
 
@@ -3406,7 +3395,6 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	if (eth_skb_pad(skb))
 		return NETDEV_TX_OK;
 
-	printk(KERN_INFO "	Passou aqui 1");
 
 	mss = skb_shinfo(skb)->gso_size;
 	/* The controller does a simple calculation to
@@ -3417,7 +3405,6 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	 * drops.
 	 */
 
-	printk(KERN_INFO "	Passou aqui 2");
 
 	if (mss) {
 		u8 hdr_len;
@@ -3455,8 +3442,6 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 			}
 		}
 	}
-
-	printk(KERN_INFO "	Passou aqui 3");
 
 	/* reserve a descriptor for the offload context */
 	if ((mss) || (skb->ip_summed == CHECKSUM_PARTIAL))
@@ -3527,12 +3512,8 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	if (unlikely(skb->no_fcs))
 		tx_flags |= E1000_TX_FLAGS_NO_FCS;
 
-	printk(KERN_INFO "	Passou aqui 4");
-
 	count = e1000_tx_map(adapter, tx_ring, skb, first, max_per_txd,
 			     nr_frags, mss);
-
-	printk(KERN_INFO "	Passou aqui 5");
 
 	if (count) {
 		/* The descriptors needed is higher than other Intel drivers
