@@ -39,6 +39,17 @@
 #include "e1000x_common.h"
 #include "trace.h"
 
+// SPDM Includes
+
+#pragma GCC diagnostic ignored "-Wundef"
+#include "spdm_common_lib.h"
+#include "spdm_responder_lib.h"
+#include "spdm_responder_lib_internal.h"
+#include "spdm_device_secret_lib_internal.h"
+#include <library/spdm_transport_mctp_lib.h>
+#include "mctp.h"
+#pragma GCC diagnostic pop
+
 static const uint8_t bcast[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
 /* #define E1000_DEBUG */
@@ -136,6 +147,12 @@ typedef struct E1000State_st {
     bool received_tx_tso;
     bool use_tso_for_migration;
     e1000x_txd_props mig_props;
+
+/* spdm members */
+	void* spdm_context;
+    QemuThread spdm_io_thread;
+
+
 } E1000State;
 
 #define chkflag(x)     (s->compat_flags & E1000_FLAG_##x)
@@ -255,6 +272,373 @@ static const uint32_t mac_reg_init[] = {
                 E1000_MANC_ARP_EN | E1000_MANC_0298_EN |
                 E1000_MANC_RMCP_EN,
 };
+
+/* spdm internal variables */
+#define E1000_SPDMDEV_MAX_BUF 4096
+
+static QemuMutex e1000_spdm_io_mutex;
+static QemuCond e1000_spdm_io_cond;
+static uint8_t e1000_spdm_buf[E1000_SPDMDEV_MAX_BUF];
+static uint32_t e1000_spdm_buf_size;
+static int e1000_spdm_send_is_ready;
+static int e1000_spdm_receive_is_ready;
+
+/* spdm device options */
+static uint8_t  e1000_m_support_measurement_spec =
+	SPDM_MEASUREMENT_BLOCK_HEADER_SPECIFICATION_DMTF;
+
+static uint32_t e1000_m_support_hash_algo =
+	SPDM_ALGORITHMS_BASE_HASH_ALGO_TPM_ALG_SHA_384 |
+	SPDM_ALGORITHMS_BASE_HASH_ALGO_TPM_ALG_SHA_256;
+
+static uint32_t e1000_m_support_measurement_hash_algo = 
+	SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA_512 |
+	SPDM_ALGORITHMS_MEASUREMENT_HASH_ALGO_TPM_ALG_SHA_384;
+
+static uint32_t e1000_m_support_asym_algo =
+	SPDM_ALGORITHMS_BASE_ASYM_ALGO_TPM_ALG_ECDSA_ECC_NIST_P384 |
+	SPDM_ALGORITHMS_BASE_ASYM_ALGO_TPM_ALG_ECDSA_ECC_NIST_P256;
+
+static uint16_t e1000_m_support_req_asym_algo = 
+	SPDM_ALGORITHMS_BASE_ASYM_ALGO_TPM_ALG_RSAPSS_3072 |
+	SPDM_ALGORITHMS_BASE_ASYM_ALGO_TPM_ALG_RSAPSS_2048 |
+	SPDM_ALGORITHMS_BASE_ASYM_ALGO_TPM_ALG_RSASSA_3072 |
+	SPDM_ALGORITHMS_BASE_ASYM_ALGO_TPM_ALG_RSASSA_2048;
+
+static uint16_t e1000_m_support_dhe_algo = 
+	SPDM_ALGORITHMS_DHE_NAMED_GROUP_SECP_384_R1 |
+	SPDM_ALGORITHMS_DHE_NAMED_GROUP_SECP_256_R1 |
+	SPDM_ALGORITHMS_DHE_NAMED_GROUP_FFDHE_3072 |
+	SPDM_ALGORITHMS_DHE_NAMED_GROUP_FFDHE_2048;
+
+static uint16_t e1000_m_support_aead_algo =
+	SPDM_ALGORITHMS_AEAD_CIPHER_SUITE_AES_256_GCM |
+	SPDM_ALGORITHMS_AEAD_CIPHER_SUITE_CHACHA20_POLY1305;
+
+static uint16_t e1000_m_support_key_schedule_algo = SPDM_ALGORITHMS_KEY_SCHEDULE_HMAC_HASH;
+
+/* spdm configuration variables */
+#define SOCKET_TRANSPORT_TYPE_MCTP 0x01
+#define SOCKET_TRANSPORT_TYPE_PCI_DOE 0x02
+
+static uint32_t e1000_m_use_hash_algo;
+static uint32_t e1000_m_use_measurement_hash_algo;
+static uint32_t e1000_m_use_asym_algo;
+static uint16_t e1000_m_use_req_asym_algo;
+
+static uint32_t e1000_m_use_transport_layer = SOCKET_TRANSPORT_TYPE_MCTP;
+static uint8_t  e1000_m_use_version = SPDM_MESSAGE_VERSION_11;
+static uint8_t  e1000_m_use_secured_message_version = SPDM_MESSAGE_VERSION_11;
+static uint32_t e1000_m_use_requester_capability_flags =
+	(0 |
+	 SPDM_GET_CAPABILITIES_REQUEST_FLAGS_CERT_CAP | /* conflict with SPDM_GET_CAPABILITIES_REQUEST_FLAGS_PUB_KEY_ID_CAP */
+	 SPDM_GET_CAPABILITIES_REQUEST_FLAGS_CHAL_CAP |
+	 SPDM_GET_CAPABILITIES_REQUEST_FLAGS_ENCRYPT_CAP |
+	 SPDM_GET_CAPABILITIES_REQUEST_FLAGS_MAC_CAP |
+	 SPDM_GET_CAPABILITIES_REQUEST_FLAGS_MUT_AUTH_CAP |
+	 SPDM_GET_CAPABILITIES_REQUEST_FLAGS_KEY_EX_CAP |
+	 SPDM_GET_CAPABILITIES_REQUEST_FLAGS_PSK_CAP_REQUESTER |
+	 SPDM_GET_CAPABILITIES_REQUEST_FLAGS_ENCAP_CAP |
+	 SPDM_GET_CAPABILITIES_REQUEST_FLAGS_HBEAT_CAP |
+	 SPDM_GET_CAPABILITIES_REQUEST_FLAGS_KEY_UPD_CAP |
+	 SPDM_GET_CAPABILITIES_REQUEST_FLAGS_HANDSHAKE_IN_THE_CLEAR_CAP |
+	 // SPDM_GET_CAPABILITIES_REQUEST_FLAGS_PUB_KEY_ID_CAP | /* conflict with SPDM_GET_CAPABILITIES_REQUEST_FLAGS_CERT_CAP */
+	 0);
+
+static uint32_t e1000_m_use_responder_capability_flags =
+	(0 | 
+	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_CACHE_CAP |
+	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_CERT_CAP | /* conflict with SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_PUB_KEY_ID_CAP */
+	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_CHAL_CAP |
+	 // SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_MEAS_CAP_NO_SIG | /* conflict with SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_MEAS_CAP_SIG */
+	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_MEAS_CAP_SIG | /* conflict with SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_MEAS_CAP_NO_SIG */
+	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_MEAS_FRESH_CAP |
+	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_ENCRYPT_CAP |
+	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_MAC_CAP |
+	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_MUT_AUTH_CAP |
+	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_KEY_EX_CAP |
+	 // SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_PSK_CAP_RESPONDER | /* conflict with SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_PSK_CAP_RESPONDER_WITH_CONTEXT */
+	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_PSK_CAP_RESPONDER_WITH_CONTEXT | /* conflict with SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_PSK_CAP_RESPONDER */
+	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_ENCAP_CAP |
+	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_HBEAT_CAP |
+	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_KEY_UPD_CAP |
+	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_HANDSHAKE_IN_THE_CLEAR_CAP |
+	 // SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_PUB_KEY_ID_CAP | /* conflict with SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_CERT_CAP */
+	 0);
+
+static uint32_t e1000_m_use_capability_flags = 0;
+static uint8_t  e1000_m_use_slot_id = 0;
+static uint8_t  e1000_m_use_slot_count = 3;
+
+static uint8_t  e1000_m_use_mut_auth =
+	SPDM_KEY_EXCHANGE_RESPONSE_MUT_AUTH_REQUESTED_WITH_ENCAP_REQUEST;
+
+static uint8_t  e1000_m_use_measurement_summary_hash_type =
+	SPDM_CHALLENGE_REQUEST_ALL_MEASUREMENTS_HASH;
+
+/* spdm functions */
+return_status e1000_spdm_send (
+  IN     void                    *SpdmContext,
+  IN     uintn                   RequestSize,
+  IN     void                    *Request,
+  IN     uint64                  Timeout
+  ) 
+{ 
+    printf("e1000_spdm_send\n");
+
+    if (RequestSize > sizeof(e1000_spdm_buf)) {
+        printf("RequestSize too large %llu\n", RequestSize);
+        return RETURN_DEVICE_ERROR;
+    }
+
+    qemu_mutex_lock(&e1000_spdm_io_mutex);
+    e1000_spdm_buf_size = RequestSize;
+    memcpy(e1000_spdm_buf, Request, RequestSize);
+    e1000_spdm_send_is_ready = 1;
+    qemu_cond_signal(&e1000_spdm_io_cond);
+    qemu_mutex_unlock(&e1000_spdm_io_mutex);
+    return RETURN_SUCCESS;
+}
+
+return_status e1000_spdm_receive (
+  IN     void                    *SpdmContext,
+  IN OUT uintn                   *ResponseSize,
+  IN OUT void                    *Response,
+  IN     uint64                  Timeout
+  ) 
+{ 
+    printf("e1000_spdm_receive\n");
+
+    if (*ResponseSize < atomic_read(&e1000_spdm_buf_size)) {
+        printf("*ResponseSize too small %llu\n", *ResponseSize);
+        return RETURN_DEVICE_ERROR;
+    }
+
+    for (int i = 0; i < e1000_spdm_buf_size; i++) {
+      printf("%02X ", ((uint8_t*)e1000_spdm_buf)[i]);
+    }
+
+    printf("\n");
+    qemu_mutex_lock(&e1000_spdm_io_mutex);
+    *ResponseSize = e1000_spdm_buf_size;
+    memcpy(Response, e1000_spdm_buf, *ResponseSize);
+    qemu_mutex_unlock(&e1000_spdm_io_mutex);
+    return RETURN_SUCCESS;
+}
+
+void e1000_spdm_server_callback (void* SpdmContext)
+{
+	static boolean               AlgoProvisioned = FALSE;
+	boolean                      Res;
+	void                         *Data;
+	uintn                        DataSize;
+	spdm_data_parameter_t          Parameter;
+	uint8_t                        Data8;
+	uint16_t                       Data16;
+	uint32_t                       Data32;
+	return_status                Status;
+	void                         *Hash;
+	uintn                        HashSize;
+	uint8_t                        Index;
+
+	printf("\te1000_spdm_server_callback before\n");
+
+	if (AlgoProvisioned) {
+		return ;
+	}
+
+	zero_mem (&Parameter, sizeof(Parameter));
+	Parameter.location = SPDM_DATA_LOCATION_CONNECTION;
+
+	DataSize = sizeof(Data32);
+	spdm_get_data (SpdmContext, SPDM_DATA_CONNECTION_STATE, &Parameter, &Data32, &DataSize);
+	if (Data32 != SPDM_CONNECTION_STATE_NEGOTIATED) {
+		return ;
+	}
+
+	// AlgoProvisioned = TRUE;
+	atomic_set(&AlgoProvisioned, TRUE);
+
+	printf("\tvirtio_blk_spdm_server_callback after\n");
+
+	DataSize = sizeof(Data32);
+	spdm_get_data (SpdmContext, SPDM_DATA_MEASUREMENT_HASH_ALGO, &Parameter, &Data32, &DataSize);
+	e1000_m_use_measurement_hash_algo = Data32;
+
+	DataSize = sizeof(Data32);
+	spdm_get_data (SpdmContext, SPDM_DATA_BASE_ASYM_ALGO, &Parameter, &Data32, &DataSize);
+	e1000_m_use_asym_algo = Data32;
+
+	DataSize = sizeof(Data32);
+	spdm_get_data (SpdmContext, SPDM_DATA_BASE_HASH_ALGO, &Parameter, &Data32, &DataSize);
+	e1000_m_use_hash_algo = Data32;
+
+	DataSize = sizeof(Data16);
+	spdm_get_data (SpdmContext, SPDM_DATA_REQ_BASE_ASYM_ALG, &Parameter, &Data16, &DataSize);
+	e1000_m_use_req_asym_algo = Data16;
+
+	Res = read_responder_public_certificate_chain (e1000_m_use_hash_algo, e1000_m_use_asym_algo, &Data, &DataSize, NULL, NULL);
+	if (Res) {
+		zero_mem (&Parameter, sizeof(Parameter));
+		Parameter.location = SPDM_DATA_LOCATION_LOCAL;
+
+		Data8 = e1000_m_use_slot_count;
+		spdm_set_data (SpdmContext, SPDM_DATA_LOCAL_SLOT_COUNT, &Parameter, &Data8, sizeof(Data8));
+
+		for (Index = 0; Index < e1000_m_use_slot_count; Index++) {
+			Parameter.additional_data[0] = Index;
+			spdm_set_data (SpdmContext, SPDM_DATA_LOCAL_PUBLIC_CERT_CHAIN, &Parameter, Data, DataSize);
+		}
+		// do not free it
+	}
+
+	if (e1000_m_use_slot_id == 0xFF) {
+		Res = read_requester_public_certificate_chain (e1000_m_use_hash_algo, e1000_m_use_req_asym_algo, &Data, &DataSize, NULL, NULL);
+		if (Res) {
+			zero_mem (&Parameter, sizeof(Parameter));
+			Parameter.location = SPDM_DATA_LOCATION_LOCAL;
+			spdm_set_data (SpdmContext, SPDM_DATA_PEER_PUBLIC_CERT_CHAIN, &Parameter, Data, DataSize);
+			// Do not free it.
+		}
+	} else {
+		Res = read_requester_root_public_certificate (e1000_m_use_hash_algo, e1000_m_use_req_asym_algo, &Data, &DataSize, &Hash, &HashSize);
+		if (Res) {
+			zero_mem (&Parameter, sizeof(Parameter));
+			Parameter.location = SPDM_DATA_LOCATION_LOCAL;
+			spdm_set_data (SpdmContext, SPDM_DATA_PEER_PUBLIC_ROOT_CERT_HASH, &Parameter, Hash, HashSize);
+			// Do not free it.
+		}
+	}
+
+	if (Res) {
+		Data8 = e1000_m_use_mut_auth;
+		if (Data8 != 0) {
+			Data8 |= SPDM_KEY_EXCHANGE_RESPONSE_MUT_AUTH_REQUESTED;
+		}
+		Parameter.additional_data[0] = e1000_m_use_slot_id; // ReqSlotNum;
+		Parameter.additional_data[1] = e1000_m_use_measurement_summary_hash_type; // MeasurementHashType;
+		spdm_set_data (SpdmContext, SPDM_DATA_MUT_AUTH_REQUESTED, &Parameter, &Data8, sizeof(Data8));
+
+		Data8 = (e1000_m_use_mut_auth & 0x1);
+		spdm_set_data (SpdmContext, SPDM_DATA_BASIC_MUT_AUTH_REQUESTED, &Parameter, &Data8, sizeof(Data8));
+	}
+
+	Status = spdm_set_data (SpdmContext, SPDM_DATA_PSK_HINT, NULL, (void *) TEST_PSK_HINT_STRING, sizeof(TEST_PSK_HINT_STRING));
+	if (RETURN_ERROR(Status)) {
+		printf ("SpdmSetData - %x\n", (uint32_t)Status);
+	}
+
+	printf("\tvirtio_blk_spdm_server_callback end\n");
+
+	return ;
+}
+
+static void* e1000_spdm_io_thread(void *opaque)
+{
+    E1000State *s = opaque;
+    return_status Status;
+
+    while (1) {
+        printf("e1000_spdm_io_thread() loop\n");
+        qemu_mutex_lock(&e1000_spdm_io_mutex);
+        if (!e1000_spdm_receive_is_ready) {
+            qemu_cond_wait(&e1000_spdm_io_cond, &e1000_spdm_io_mutex);
+        }
+        e1000_spdm_receive_is_ready = 0;
+
+        qemu_mutex_unlock(&e1000_spdm_io_mutex);
+
+        // ToDo: whats the stopping condition?
+        // if (spdmst->stopping) {
+        //     break;
+        // }
+
+        Status = spdm_responder_dispatch_message (s->spdm_context);
+
+        if (Status == RETURN_SUCCESS) {
+            // load certificates and stuff
+            e1000_spdm_server_callback (s->spdm_context);
+        } else {
+            printf("SpdmResponderDispatchMessage error: %llX\n", Status);
+        }
+    }
+
+    return NULL;
+}
+
+return_status e1000_spdm_get_response_vendor_defined_request(
+  IN void *spdm_context, IN uint32 *session_id, IN boolean is_app_message,
+  IN uintn request_size, IN void *request, IN OUT uintn *response_size,
+  OUT void *response)
+{
+  memcpy(response, request, request_size);
+  *response_size = request_size;
+  return RETURN_SUCCESS;
+}
+
+static int e1000_spdm_init(E1000State *s) {
+    spdm_data_parameter_t          Parameter;
+    uint8_t                        Data8;
+    uint16_t                       Data16;
+    uint32_t                       Data32;
+
+    s->spdm_context = (void *)malloc (spdm_get_context_size());
+    if (s->spdm_context == NULL) {
+        return -1;
+    }
+    spdm_init_context(s->spdm_context);
+	printf("e1000_spdm_init: SPDM context initialized\n");
+    //BLK_SPDM_PRINT("virtio_blk_spdm_init: SPDM context initialized\n");
+
+    spdm_register_device_io_func (s->spdm_context, e1000_spdm_send, e1000_spdm_receive);
+    spdm_register_transport_layer_func (s->spdm_context, spdm_transport_mctp_encode_message, spdm_transport_mctp_decode_message);
+
+    zero_mem (&Parameter, sizeof(Parameter));
+    Parameter.location = SPDM_DATA_LOCATION_LOCAL;
+    spdm_set_data (s->spdm_context, SPDM_DATA_CAPABILITY_CT_EXPONENT, &Parameter, &Data8, sizeof(Data8));
+
+    Data32 = e1000_m_use_capability_flags ? 
+		e1000_m_use_capability_flags :
+		e1000_m_use_responder_capability_flags;
+    spdm_set_data (s->spdm_context, SPDM_DATA_CAPABILITY_FLAGS, &Parameter, &Data32, sizeof(Data32));
+
+    Data8 = e1000_m_support_measurement_spec;
+    spdm_set_data (s->spdm_context, SPDM_DATA_MEASUREMENT_SPEC, &Parameter, &Data8, sizeof(Data8));
+
+    Data32 = e1000_m_support_measurement_hash_algo;
+    spdm_set_data (s->spdm_context, SPDM_DATA_MEASUREMENT_HASH_ALGO, &Parameter, &Data32, sizeof(Data32));
+
+    Data32 = e1000_m_support_asym_algo;
+    spdm_set_data (s->spdm_context, SPDM_DATA_BASE_ASYM_ALGO, &Parameter, &Data32, sizeof(Data32));
+
+    Data32 = e1000_m_support_hash_algo;
+    spdm_set_data (s->spdm_context, SPDM_DATA_BASE_HASH_ALGO, &Parameter, &Data32, sizeof(Data32));
+
+    Data16 = e1000_m_support_dhe_algo;
+    spdm_set_data (s->spdm_context, SPDM_DATA_DHE_NAME_GROUP, &Parameter, &Data16, sizeof(Data16));
+
+    Data16 = e1000_m_support_aead_algo;
+    spdm_set_data (s->spdm_context, SPDM_DATA_AEAD_CIPHER_SUITE, &Parameter, &Data16, sizeof(Data16));
+
+    Data16 = e1000_m_support_req_asym_algo;
+    spdm_set_data (s->spdm_context, SPDM_DATA_REQ_BASE_ASYM_ALG, &Parameter, &Data16, sizeof(Data16));
+
+    Data16 = e1000_m_support_key_schedule_algo;
+    spdm_set_data (s->spdm_context, SPDM_DATA_KEY_SCHEDULE, &Parameter, &Data16, sizeof(Data16));
+
+    qemu_mutex_init(&e1000_spdm_io_mutex);
+    qemu_cond_init(&e1000_spdm_io_cond);
+    e1000_spdm_buf_size = 0;
+    e1000_spdm_send_is_ready = 0;
+    e1000_spdm_receive_is_ready = 0;
+
+    spdm_register_get_response_func(s->spdm_context, e1000_spdm_get_response_vendor_defined_request);
+	
+    qemu_thread_create(&s->spdm_io_thread, "spdm_io_e1000", e1000_spdm_io_thread,
+                       s, QEMU_THREAD_JOINABLE);
+    return 0;
+}
+
 
 /* Helper function, *curr == 0 means the value is not set */
 static inline void
@@ -633,8 +1017,6 @@ process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
     struct e1000_context_desc *xp = (struct e1000_context_desc *)dp;
     struct e1000_tx *tp = &s->tx;
 
-
-
     s->mit_ide |= (txd_lower & E1000_TXD_CMD_IDE);
     if (dtype == E1000_TXD_CMD_DEXT) {    /* context descriptor */
         if (le32_to_cpu(xp->cmd_and_length) & E1000_TXD_CMD_TSE) {
@@ -696,17 +1078,6 @@ process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
         pci_dma_read(d, addr, tp->data + tp->size, split_size);
         tp->size += split_size;
     }
-
-    /*Alteração para bugar transmissão de pacotes*/
-
-    /*int len = tp->size;
-    unsigned char *buffer_start = tp->data;
-    int teste = 0;
-
-    for(teste = 0; teste < len; teste++){
-        buffer_start[teste] = buffer_start[teste] - 1;
-        printf("DEBUG QEMU: buffear_start[%d]: %c \n", teste, buffer_start[teste]);
-    }*/
 
     if (!(txd_lower & E1000_TXD_CMD_EOP))
         return;
@@ -977,16 +1348,6 @@ e1000_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt)
                 }
                 do {
                     iov_copy = MIN(copy_size, iov->iov_len - iov_ofs);
-
-                    /*Alteração para bugar buffer de recebimento*/
-
-                    unsigned char *buffer_start = iov->iov_base + iov_ofs;
-                    int teste = 0;
-
-                    for(teste = 0; teste < iov_copy; teste++){
-                        buffer_start[teste] = buffer_start[teste] - 1;
-                    }
-
                     pci_dma_write(d, ba, iov->iov_base + iov_ofs, iov_copy);
                     copy_size -= iov_copy;
                     ba += iov_copy;
@@ -1705,6 +2066,10 @@ static void pci_e1000_realize(PCIDevice *pci_dev, Error **errp)
     E1000State *d = E1000(pci_dev);
     uint8_t *pci_conf;
     uint8_t *macaddr;
+
+	void* spdm_context = malloc(spdm_get_context_size());
+	spdm_init_context(spdm_context);
+	printf("SPDM Initialized\n");
 
     pci_dev->config_write = e1000_write_config;
 
