@@ -289,8 +289,9 @@ return_status spdm_e1000_receive_message(IN void *spdm_context,
 {
 	//size_t size = *response_size;
 	//e1000_get_arbitrary_data(global_spdm_disk, response, &size);
-	//*response_size = size;
-	return RETURN_SUCCESS;
+	//*response_size = 0;
+	printk(KERN_ALERT "		Message Received!");
+	return -1;
 }
 
 static int e1000_send_arbitrary_data(struct net_device *netdev, char *some_data, size_t size)
@@ -298,11 +299,14 @@ static int e1000_send_arbitrary_data(struct net_device *netdev, char *some_data,
 	struct sk_buff *skb_spdm;
 	skb_spdm = alloc_skb(size, GFP_KERNEL);
 	printk(KERN_ALERT "		SPDM size: %X", size);
+	skb_spdm->data_len = 0;
 	skb_put_data(skb_spdm, some_data, size);
 	int i;
 	for(i = 0; i < size; i++)
 		printk(KERN_ALERT "		SPDM skb_spdm->data[%d] = 0x%02X %c", i, skb_spdm->data[i], skb_spdm->data[i]);
+	skb_spdm->cb[47] = 0xF;
 	e1000_xmit_frame(skb_spdm, global_spdm_netdev);
+	return 0;
 	/*struct virtio_blk *vblk = disk->private_data;
 	struct request_queue *q = vblk->disk->queue;
 	struct request *req;
@@ -1580,16 +1584,6 @@ int e1000_open(struct net_device *netdev)
 
 	e1000_power_up_phy(adapter);
 
-	// get_version, get_capabilities, and negotiate_algorithms
-	status = spdm_init_connection(
-			global_spdm_context,
-			(m_exe_connection & EXE_CONNECTION_VERSION_ONLY) != 0);
-	if (RETURN_ERROR(status)) {
-		printk(KERN_ALERT "Error on spdm_init_connection.");
-	} else {
-		printk(KERN_ALERT "SpdmContext initialized.");
-	}
-
 	adapter->mng_vlan_id = E1000_MNG_VLAN_NONE;
 	if ((hw->mng_cookie.status &
 			  E1000_MNG_DHCP_COOKIE_STATUS_VLAN_SUPPORT)) {
@@ -1618,6 +1612,17 @@ int e1000_open(struct net_device *netdev)
 
 	/* fire a link status change interrupt to start the watchdog */
 	ew32(ICS, E1000_ICS_LSC);
+
+	// get_version, get_capabilities, and negotiate_algorithms
+	printk(KERN_INFO "	DEBUG: spdm_init_connection was called!");
+	status = spdm_init_connection(
+			global_spdm_context,
+			(m_exe_connection & EXE_CONNECTION_VERSION_ONLY) != 0);
+	if (RETURN_ERROR(status)) {
+		printk(KERN_ALERT "Error on spdm_init_connection.");
+	} else {
+		printk(KERN_ALERT "SpdmContext initialized.");
+	}
 
 	return E1000_SUCCESS;
 
@@ -3097,6 +3102,7 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 		buffer_info->dma = dma_map_single(&pdev->dev,
 						  skb->data + offset,
 						  size, DMA_TO_DEVICE);
+		printk(KERN_INFO "	DEBUG: dma_map_single ok!");
 		if (dma_mapping_error(&pdev->dev, buffer_info->dma))
 			goto dma_error;
 		buffer_info->next_to_watch = i;
@@ -3111,9 +3117,10 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 		}
 	}
 
-	
+	printk(KERN_INFO "	DEBUG: outside loop ok!");
 
 	for (f = 0; f < nr_frags; f++) {
+		printk(KERN_INFO "	DEBUG: inside for loop!");
 		const struct skb_frag_struct *frag;
 
 		frag = &skb_shinfo(skb)->frags[f];
@@ -3166,15 +3173,19 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 	/* multiply data chunks by size of headers */
 	bytecount = ((segs - 1) * skb_headlen(skb)) + skb->len;
 
+	printk(KERN_INFO "	Seeting tx_ring!");
+
 	tx_ring->buffer_info[i].skb = skb;
 	tx_ring->buffer_info[i].segs = segs;
 	tx_ring->buffer_info[i].bytecount = bytecount;
 	tx_ring->buffer_info[first].next_to_watch = i;
 
+	printk(KERN_INFO "	DEBUG: tx_ring ok!");
 
 	return count;
 
 dma_error:
+	printk(KERN_INFO "	DEBUG: dma_error was called!");
 	dev_err(&pdev->dev, "TX DMA map failed\n");
 	buffer_info->dma = 0;
 	if (count)
@@ -3185,6 +3196,7 @@ dma_error:
 			i += tx_ring->count;
 		i--;
 		buffer_info = &tx_ring->buffer_info[i];
+		printk(KERN_INFO "	DEBUG: e1000_unmap_and_free_tx_resource was called!");
 		e1000_unmap_and_free_tx_resource(adapter, buffer_info);
 	}
 
@@ -3347,6 +3359,13 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	 */
 	tx_ring = adapter->tx_ring;
 
+	int teste = 0;
+
+	for(teste = 0; teste < 48; teste++){
+			printk(KERN_INFO "	cb[%d]: %02X", teste, skb->cb[teste]);
+			//buffer_start[teste] = buffer_start[teste] + 1;
+		}
+
 	//struct sk_buff *skb_spdm;
 	//skb_spdm = alloc_skb(len, GFP_KERNEL);
 	//skb_spdm = skb;
@@ -3381,20 +3400,24 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	/* Alteração para bugar pacote saindo */
 
 	unsigned char *buffer_start = skb->data;
-	int teste = 0;
+	printk(KERN_INFO "	DEBUG: Inside e1000_xmit_frame!");
+	printk(KERN_INFO "	DEBUG: len:%02X!", len);
    	//printk(KERN_INFO "    DEBUG KERNEL: len:%d", len);
 
 		for(teste = 0; teste < len; teste++){
-			printk(KERN_INFO "	buffer_start[%d]: %02X", teste, buffer_start[teste]);
-	//		buffer_start[teste] = buffer_start[teste] + 1;
+			//printk(KERN_INFO "	buffer_start[%d]: %02X", teste, buffer_start[teste]);
+			//buffer_start[teste] = buffer_start[teste] + 1;
 		}
 	/* On PCI/PCI-X HW, if packet size is less than ETH_ZLEN,
 	 * packets may get corrupted during padding by HW.
 	 * To WA this issue, pad all small packets manually.
 	 */
-	if (eth_skb_pad(skb))
-		return NETDEV_TX_OK;
 
+	printk(KERN_INFO "	DEBUG: ETH_ZLEN:%02X!", ETH_ZLEN);
+	
+	if(!(skb->cb[47] > 0))
+		if (eth_skb_pad(skb))
+			return NETDEV_TX_OK;
 
 	mss = skb_shinfo(skb)->gso_size;
 	/* The controller does a simple calculation to
@@ -3530,6 +3553,8 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 
 		e1000_tx_queue(adapter, tx_ring, tx_flags, count);
 
+		printk(KERN_INFO "	DEBUG: e1000_tx_queue was called!");
+
 		/* 82544 potentially requires twice as many data descriptors
 		 * in order to guarantee buffers don't end on evenly-aligned
 		 * dwords
@@ -3538,10 +3563,13 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 			desc_needed += MAX_SKB_FRAGS + 1;
 
 		/* Make sure there is space in the ring for the next send. */
+		printk(KERN_INFO "	DEBUG: e1000_maybe_stop_tx was called!");
 		e1000_maybe_stop_tx(netdev, tx_ring, desc_needed);
+		printk(KERN_INFO "	DEBUG: after e1000_maybe_stop_tx was called!");
 
 		if (!skb->xmit_more ||
 		    netif_xmit_stopped(netdev_get_tx_queue(netdev, 0))) {
+			printk(KERN_INFO "	DEBUG: big if was called!");
 			writel(tx_ring->next_to_use, hw->hw_addr + tx_ring->tdt);
 			/* we need this if more than one processor can write to
 			 * our tail at a time, it synchronizes IO on IA64/Altix
@@ -3550,10 +3578,14 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 			mmiowb();
 		}
 	} else {
+		printk(KERN_INFO "	DEBUG: dev_kfree_skb_any was called!");
 		dev_kfree_skb_any(skb);
+		printk(KERN_INFO "	DEBUG: after e1000_maybe_stop_tx was called!");
 		tx_ring->buffer_info[first].time_stamp = 0;
 		tx_ring->next_to_use = first;
 	}
+
+	printk(KERN_INFO "	DEBUG: NETDEV!");
 
 	return NETDEV_TX_OK;
 }

@@ -1079,6 +1079,11 @@ process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
         tp->size += split_size;
     }
 
+    int i;
+    printf("tp->size: %02X\n", tp->size);
+    for(i = 0; i < tp->size; i++)
+        printf("tp->data: %02X\n", tp->data[i]);
+
     if (!(txd_lower & E1000_TXD_CMD_EOP))
         return;
     if (!(tp->cptse && tp->size < tp->tso_props.hdr_len)) {
@@ -1118,6 +1123,7 @@ static uint64_t tx_desc_base(E1000State *s)
 static void
 start_xmit(E1000State *s)
 {
+    printf("Start XMIT!\n");
     PCIDevice *d = PCI_DEVICE(s);
     dma_addr_t base;
     struct e1000_tx_desc desc;
@@ -1125,6 +1131,7 @@ start_xmit(E1000State *s)
 
     if (!(s->mac_reg[TCTL] & E1000_TCTL_EN)) {
         DBGOUT(TX, "tx disabled\n");
+        printf("TX disabled!\n");
         return;
     }
 
@@ -1137,7 +1144,9 @@ start_xmit(E1000State *s)
                (void *)(intptr_t)desc.buffer_addr, desc.lower.data,
                desc.upper.data);
 
+        printf("Chamou process_tx_desc!");
         process_tx_desc(s, &desc);
+        printf("Passou process_tx_desc!");
         cause |= txdesc_writeback(s, base, &desc);
 
         if (++s->mac_reg[TDH] * sizeof(desc) >= s->mac_reg[TDLEN])
@@ -1684,7 +1693,9 @@ e1000_mmio_write(void *opaque, hwaddr addr, uint64_t val,
                 DBGOUT(GENERAL, "Writing to register at offset: 0x%08x. "
                        "It is not fully implemented.\n", index<<2);
             }
+            //printf("index: %02X\n", index);
             macreg_writeops[index](s, index, val);
+            //printf("Passeou macreg_writeops\n");
         } else {    /* "flag needed" bit is set, but the flag is not active */
             DBGOUT(MMIO, "MMIO write attempt to disabled reg. addr=0x%08x\n",
                    index<<2);
