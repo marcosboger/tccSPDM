@@ -211,6 +211,7 @@ static struct pci_driver e1000_driver = {
 
 struct net_device *global_spdm_netdev = NULL;
 static int e1000_send_arbitrary_data(struct net_device*, char*, size_t);
+static int e1000_get_arbitrary_data(struct net_device *netdev, char *buf, size_t *size);
 void* e1000_init_spdm(void);
 
 
@@ -287,9 +288,8 @@ return_status spdm_e1000_receive_message(IN void *spdm_context,
 					  IN OUT void *response,
 					  IN uint64 timeout)
 {
-	//size_t size = *response_size;
-	//e1000_get_arbitrary_data(global_spdm_disk, response, &size);
-	//*response_size = 0;
+	size_t size = *response_size;
+	e1000_get_arbitrary_data(global_spdm_netdev, response, &size);
 	printk(KERN_ALERT "		Message Received!");
 	return -1;
 }
@@ -329,6 +329,14 @@ static int e1000_send_arbitrary_data(struct net_device *netdev, char *some_data,
 out:
 	blk_put_request(req);
 	return err;*/
+}
+
+static int e1000_get_arbitrary_data(struct net_device *netdev, char *buf, size_t *size)
+{
+	struct e1000_adapter *adapter = netdev_priv(netdev);
+	struct e1000_rx_ring *rx = &adapter->rx_ring[0];
+	int work = 0;
+	e1000_clean_rx_irq(adapter, rx, &work, 5);
 }
 
 void* e1000_init_spdm(void) {
