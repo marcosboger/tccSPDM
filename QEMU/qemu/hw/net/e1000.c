@@ -400,6 +400,88 @@ return_status e1000_spdm_send (
     return RETURN_SUCCESS;
 }
 
+static uint64_t rx_desc_base(E1000State *s);
+
+void e1000_spdm_send_arbitrary_data(NetClientState *nc, const struct iovec *iov, int iovcnt){
+    E1000State *s = qemu_get_nic_opaque(nc);
+    PCIDevice *d = PCI_DEVICE(s);
+    struct e1000_rx_desc desc;
+    dma_addr_t base;
+    unsigned int n, rdt;
+    uint32_t rdh_start;
+    uint16_t vlan_special = 0;
+    uint8_t vlan_status = 0;
+    uint8_t min_buf[MIN_BUF_SIZE];
+    struct iovec min_iov;
+    uint8_t *filter_buf = iov->iov_base;
+    size_t size = iov_size(iov, iovcnt);
+    size_t iov_ofs = 0;
+    size_t desc_offset;
+    size_t desc_size;
+    size_t total_size;
+
+    rdh_start = s->mac_reg[RDH];
+    desc_offset = 0;
+    total_size = size; //+ e1000x_fcs_len(s->mac_reg);
+    do {
+        desc_size = total_size - desc_offset;
+        if (desc_size > s->rxbuf_size) {
+            desc_size = s->rxbuf_size;
+        }
+        base = rx_desc_base(s) + sizeof(desc) * s->mac_reg[RDH];
+        pci_dma_read(d, base, &desc, sizeof(desc));
+        desc.special = vlan_special;
+        desc.status |= (vlan_status | E1000_RXD_STAT_DD);
+        if (desc.buffer_addr) {
+            if (desc_offset < size) {
+                size_t iov_copy;
+                hwaddr ba = le64_to_cpu(desc.buffer_addr);
+                size_t copy_size = size - desc_offset;
+                if (copy_size > s->rxbuf_size) {
+                    copy_size = s->rxbuf_size;
+                }
+                do {
+                    iov_copy = MIN(copy_size, iov->iov_len - iov_ofs);
+                    pci_dma_write(d, ba, iov->iov_base + iov_ofs, iov_copy);
+                    copy_size -= iov_copy;
+                    ba += iov_copy;
+                    iov_ofs += iov_copy;
+                    if (iov_ofs == iov->iov_len) {
+                        iov++;
+                        iov_ofs = 0;
+                    }
+                } while (copy_size);
+            }
+            desc_offset += desc_size;
+            desc.length = cpu_to_le16(desc_size);
+            if (desc_offset >= total_size) {
+                desc.status |= E1000_RXD_STAT_EOP | E1000_RXD_STAT_IXSM;
+            } else {
+                /* Guest zeroing out status is not a hardware requirement.
+                   Clear EOP in case guest didn't do it. */
+                desc.status &= ~E1000_RXD_STAT_EOP;
+            }
+        } else { // as per intel docs; skip descriptors with null buf addr
+            DBGOUT(RX, "Null RX descriptor!!\n");
+        }
+        pci_dma_write(d, base, &desc, sizeof(desc));
+
+        if (++s->mac_reg[RDH] * sizeof(desc) >= s->mac_reg[RDLEN])
+            s->mac_reg[RDH] = 0;
+        /* see comment in start_xmit; same here */
+        if (s->mac_reg[RDH] == rdh_start ||
+            rdh_start >= s->mac_reg[RDLEN] / sizeof(desc)) {
+            DBGOUT(RXERR, "RDH wraparound @%x, RDT %x, RDLEN %x\n",
+                   rdh_start, s->mac_reg[RDT], s->mac_reg[RDLEN]);
+            //e1000_receiver_overrun(s, total_size);
+            return -1;
+        }
+    } while (desc_offset < total_size);
+
+    return;
+}
+
+
 return_status e1000_spdm_receive (
   IN     void                    *SpdmContext,
   IN OUT uintn                   *ResponseSize,
@@ -1005,6 +1087,9 @@ xmit_seg(E1000State *s)
     s->mac_reg[GOTCH] = s->mac_reg[TOTH];
 }
 
+static ssize_t
+e1000_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt);
+
 static void
 process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
 {
@@ -1079,10 +1164,20 @@ process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
         tp->size += split_size;
     }
 
+    //Aqui vem o tratamento das mensagens SPDM
+
     int i;
     printf("tp->size: %02X\n", tp->size);
-    for(i = 0; i < tp->size; i++)
+    for(i = 0; i < 5; i++)
         printf("tp->data: %02X\n", tp->data[i]);
+
+    const struct iovec iov = {
+        .iov_base = (uint8_t*) tp->data,
+        .iov_len = tp->size
+    };   
+    e1000_spdm_send_arbitrary_data(s->nic->ncs, &iov, 1);
+
+    return;
 
     if (!(txd_lower & E1000_TXD_CMD_EOP))
         return;
@@ -1287,7 +1382,7 @@ e1000_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt)
         return -1;
     }
 
-    if (timer_pending(s->flush_queue_timer)) {
+    if (timer_pending(s->flush_queue_timer) && 0) {
         return 0;
     }
 

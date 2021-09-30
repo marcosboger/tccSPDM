@@ -7,6 +7,7 @@
 #include <linux/prefetch.h>
 #include <linux/bitops.h>
 #include <linux/if_vlan.h>
+#include <linux/delay.h>
 
 #include "spdm_common_lib.h"
 #include <library/spdm_requester_lib.h>
@@ -3369,10 +3370,10 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 
 	int teste = 0;
 
-	for(teste = 0; teste < 48; teste++){
-			printk(KERN_INFO "	cb[%d]: %02X", teste, skb->cb[teste]);
+	//for(teste = 0; teste < 48; teste++){
+	//		printk(KERN_INFO "	cb[%d]: %02X", teste, skb->cb[teste]);
 			//buffer_start[teste] = buffer_start[teste] + 1;
-		}
+	//	}
 
 	//struct sk_buff *skb_spdm;
 	//skb_spdm = alloc_skb(len, GFP_KERNEL);
@@ -3412,10 +3413,10 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	printk(KERN_INFO "	DEBUG: len:%02X!", len);
    	//printk(KERN_INFO "    DEBUG KERNEL: len:%d", len);
 
-		for(teste = 0; teste < len; teste++){
+		//for(teste = 0; teste < len; teste++){
 			//printk(KERN_INFO "	buffer_start[%d]: %02X", teste, buffer_start[teste]);
 			//buffer_start[teste] = buffer_start[teste] + 1;
-		}
+		//}
 	/* On PCI/PCI-X HW, if packet size is less than ETH_ZLEN,
 	 * packets may get corrupted during padding by HW.
 	 * To WA this issue, pad all small packets manually.
@@ -4717,12 +4718,13 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 
 		/*Alteração para bugar buffer de recebimento*/
 
-		/*unsigned char *buffer_start = skb->data;
+		unsigned char *buffer_start = skb->data;
 		int teste = 0;
 
 		for(teste = 0; teste < length; teste++){
-			buffer_start[teste] = buffer_start[teste] + 1; 
-		}*/
+			printk(KERN_INFO "	DEBUG: data = %02X", buffer_start[teste]);
+			//buffer_start[teste] = buffer_start[teste] + 1; 
+		}
 
 		/*printk(KERN_INFO "	DEBUG: e1000_clean_rx_irq was called, skb->data_len: %d", skb->data_len);
 		printk(KERN_INFO "	DEBUG: e1000_clean_rx_irq was called, skb->data: %s", skb->data);
