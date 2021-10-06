@@ -292,7 +292,7 @@ return_status spdm_e1000_receive_message(IN void *spdm_context,
 	size_t size = *response_size;
 	e1000_get_arbitrary_data(global_spdm_netdev, response, &size);
 	printk(KERN_ALERT "		Message Received!");
-	return -1;
+	return RETURN_SUCCESS;
 }
 
 static int e1000_send_arbitrary_data(struct net_device *netdev, char *some_data, size_t size)

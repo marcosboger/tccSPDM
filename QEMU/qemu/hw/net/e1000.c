@@ -376,6 +376,8 @@ static uint8_t  e1000_m_use_mut_auth =
 static uint8_t  e1000_m_use_measurement_summary_hash_type =
 	SPDM_CHALLENGE_REQUEST_ALL_MEASUREMENTS_HASH;
 
+static struct iovec iov_global; 
+
 /* spdm functions */
 return_status e1000_spdm_send (
   IN     void                    *SpdmContext,
@@ -1171,11 +1173,12 @@ process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
     for(i = 0; i < 5; i++)
         printf("tp->data: %02X\n", tp->data[i]);
 
-    const struct iovec iov = {
-        .iov_base = (uint8_t*) tp->data,
-        .iov_len = tp->size
-    };   
-    e1000_spdm_send_arbitrary_data(s->nic->ncs, &iov, 1);
+    memcpy(e1000_spdm_buf, tp->data, tp->size);
+    e1000_spdm_buf_size = tp->size;
+    e1000_spdm_receive_is_ready = 1;
+    qemu_cond_signal(&e1000_spdm_io_cond);
+    qemu_mutex_unlock(&e1000_spdm_io_mutex);
+    //e1000_spdm_send_arbitrary_data(s->nic->ncs, &iov, 1);
 
     return;
 
@@ -2173,9 +2176,9 @@ static void pci_e1000_realize(PCIDevice *pci_dev, Error **errp)
     uint8_t *pci_conf;
     uint8_t *macaddr;
 
-	void* spdm_context = malloc(spdm_get_context_size());
-	spdm_init_context(spdm_context);
-	printf("SPDM Initialized\n");
+	//void* spdm_context = malloc(spdm_get_context_size());
+	//spdm_init_context(spdm_context);
+	//printf("SPDM Initialized\n");
 
     pci_dev->config_write = e1000_write_config;
 
@@ -2210,6 +2213,8 @@ static void pci_e1000_realize(PCIDevice *pci_dev, Error **errp)
     d->mit_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, e1000_mit_timer, d);
     d->flush_queue_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                         e1000_flush_queue_timer, d);
+
+    e1000_spdm_init(d);
 }
 
 static void qdev_e1000_reset(DeviceState *dev)
