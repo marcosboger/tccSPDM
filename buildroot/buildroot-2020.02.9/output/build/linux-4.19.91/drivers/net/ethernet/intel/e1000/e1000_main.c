@@ -332,12 +332,17 @@ out:
 	return err;*/
 }
 
+static void e1000_next_buffer_from_rx_ring (struct e1000_rx_ring* rx_ring, char *buf, size_t *len);
 static int e1000_get_arbitrary_data(struct net_device *netdev, char *buf, size_t *size)
 {
 	struct e1000_adapter *adapter = netdev_priv(netdev);
 	struct e1000_rx_ring *rx = &adapter->rx_ring[0];
-	int work = 0;
-	e1000_clean_rx_irq(adapter, rx, &work, 5);
+
+	e1000_next_buffer_from_rx_ring (rx, buf, size);
+
+	rx->next_to_clean++;
+	if (rx->next_to_clean == rx->count)
+		rx->next_to_clean = 0;
 }
 
 void* e1000_init_spdm(void) {
@@ -4653,6 +4658,20 @@ static struct sk_buff *e1000_copybreak(struct e1000_adapter *adapter,
 	skb_put_data(skb, data, length);
 
 	return skb;
+}
+
+// TODO: Fazer o e1000_clean_rx_irq depender deste aqui!
+static void e1000_next_buffer_from_rx_ring (struct e1000_rx_ring* rx_ring, char* buf, size_t* len)
+{
+	struct net_device *netdev = global_spdm_netdev;
+	struct e1000_adapter *adapter = netdev_priv(netdev);
+
+	unsigned int i = rx_ring->next_to_clean;
+	struct e1000_rx_desc* rx_desc = E1000_RX_DESC(*rx_ring, i);
+	struct e1000_rx_buffer* info_buffer = &rx_ring->buffer_info[i];
+
+	*len = le16_to_cpu(rx_desc->length);
+	memcpy(buf, info_buffer->rxbuf.data, *len);
 }
 
 /**

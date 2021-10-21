@@ -154,6 +154,7 @@ typedef struct E1000State_st {
 
 
 } E1000State;
+E1000State* e1000_state_global;
 
 #define chkflag(x)     (s->compat_flags & E1000_FLAG_##x)
 
@@ -393,19 +394,27 @@ return_status e1000_spdm_send (
         return RETURN_DEVICE_ERROR;
     }
 
-    qemu_mutex_lock(&e1000_spdm_io_mutex);
-    e1000_spdm_buf_size = RequestSize;
-    memcpy(e1000_spdm_buf, Request, RequestSize);
-    e1000_spdm_send_is_ready = 1;
-    qemu_cond_signal(&e1000_spdm_io_cond);
-    qemu_mutex_unlock(&e1000_spdm_io_mutex);
+    //qemu_mutex_lock(&e1000_spdm_io_mutex);
+    //e1000_spdm_buf_size = RequestSize;
+    //memcpy(e1000_spdm_buf, Request, RequestSize);
+    //e1000_spdm_send_is_ready = 1;
+    //qemu_cond_signal(&e1000_spdm_io_cond);
+    //qemu_mutex_unlock(&e1000_spdm_io_mutex);
+	struct iovec iov = {
+		.iov_base = Request,
+		.iov_len = RequestSize,
+	};
+	e1000_spdm_send_arbitrary_data(&iov, 1);
+
     return RETURN_SUCCESS;
 }
 
 static uint64_t rx_desc_base(E1000State *s);
 
-void e1000_spdm_send_arbitrary_data(NetClientState *nc, const struct iovec *iov, int iovcnt){
-    E1000State *s = qemu_get_nic_opaque(nc);
+void e1000_spdm_send_arbitrary_data(const struct iovec *iov, int iovcnt){
+
+    E1000State *s = e1000_state_global;
+
     PCIDevice *d = PCI_DEVICE(s);
     struct e1000_rx_desc desc;
     dma_addr_t base;
@@ -426,6 +435,7 @@ void e1000_spdm_send_arbitrary_data(NetClientState *nc, const struct iovec *iov,
     desc_offset = 0;
     total_size = size; //+ e1000x_fcs_len(s->mac_reg);
     do {
+		// TODO: verificar o tamanho máximo do buffer pra alocar no DMA
         desc_size = total_size - desc_offset;
         if (desc_size > s->rxbuf_size) {
             desc_size = s->rxbuf_size;
@@ -589,7 +599,7 @@ void e1000_spdm_server_callback (void* SpdmContext)
 		if (Res) {
 			zero_mem (&Parameter, sizeof(Parameter));
 			Parameter.location = SPDM_DATA_LOCATION_LOCAL;
-			spdm_set_data (SpdmContext, SPDM_DATA_PEER_PUBLIC_ROOT_CERT_HASH, &Parameter, Hash, HashSize);
+			spdm_set_data (SpdmContext, SPDM_DATA_PEER_PUBLIC_ROOT_CERT, &Parameter, Hash, HashSize);
 			// Do not free it.
 		}
 	}
@@ -1092,7 +1102,7 @@ xmit_seg(E1000State *s)
 static ssize_t
 e1000_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt);
 
-static void
+static int
 process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
 {
     PCIDevice *d = PCI_DEVICE(s);
@@ -1180,11 +1190,16 @@ process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
     qemu_mutex_unlock(&e1000_spdm_io_mutex);
     //e1000_spdm_send_arbitrary_data(s->nic->ncs, &iov, 1);
 
-    return;
+    return 0;
 
     if (!(txd_lower & E1000_TXD_CMD_EOP))
         return;
     if (!(tp->cptse && tp->size < tp->tso_props.hdr_len)) {
+		if (!(s->mac_reg[TCTL] & E1000_TCTL_EN)) {
+			DBGOUT(TX, "tx disabled\n");
+			printf("TX disabled!\n");
+			return -1;
+		}
         xmit_seg(s);
     }
     tp->tso_frames = 0;
@@ -1227,11 +1242,11 @@ start_xmit(E1000State *s)
     struct e1000_tx_desc desc;
     uint32_t tdh_start = s->mac_reg[TDH], cause = E1000_ICS_TXQE;
 
-    if (!(s->mac_reg[TCTL] & E1000_TCTL_EN)) {
-        DBGOUT(TX, "tx disabled\n");
-        printf("TX disabled!\n");
-        return;
-    }
+    //if (!(s->mac_reg[TCTL] & E1000_TCTL_EN)) {
+    //    DBGOUT(TX, "tx disabled\n");
+    //    printf("TX disabled!\n");
+    //    return;
+    //}
 
     while (s->mac_reg[TDH] != s->mac_reg[TDT]) {
         base = tx_desc_base(s) +
@@ -1243,7 +1258,7 @@ start_xmit(E1000State *s)
                desc.upper.data);
 
         printf("Chamou process_tx_desc!");
-        process_tx_desc(s, &desc);
+        if (process_tx_desc(s, &desc)) return;
         printf("Passou process_tx_desc!");
         cause |= txdesc_writeback(s, base, &desc);
 
@@ -2271,6 +2286,9 @@ static void e1000_instance_init(Object *obj)
     device_add_bootindex_property(obj, &n->conf.bootindex,
                                   "bootindex", "/ethernet-phy@0",
                                   DEVICE(n), NULL);
+
+	// Salva para ser usado pelo SPDM
+	e1000_state_global = n;
 }
 
 static const TypeInfo e1000_base_info = {
