@@ -123,6 +123,8 @@ static void e1000_watchdog(struct work_struct *work);
 static void e1000_82547_tx_fifo_stall_task(struct work_struct *work);
 static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 				    struct net_device *netdev);
+static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
+				    struct net_device *netdev, uint8_t spdm_msg_type);
 static int e1000_change_mtu(struct net_device *netdev, int new_mtu);
 static int e1000_set_mac(struct net_device *netdev, void *p);
 static irqreturn_t e1000_intr(int irq, void *data);
@@ -291,45 +293,29 @@ return_status spdm_e1000_receive_message(IN void *spdm_context,
 {
 	size_t size = *response_size;
 	e1000_get_arbitrary_data(global_spdm_netdev, response, &size);
-	printk(KERN_ALERT "		Message Received!");
+	*response_size = size;
+	printk(KERN_ALERT "[KERNEL] Message Received!");
 	return RETURN_SUCCESS;
 }
 
 static int e1000_send_arbitrary_data(struct net_device *netdev, char *some_data, size_t size)
 {
+	printk(KERN_ALERT "[KERNEL] SPDM size: %X", size);
+
 	struct sk_buff *skb_spdm;
 	skb_spdm = alloc_skb(size, GFP_KERNEL);
-	printk(KERN_ALERT "		SPDM size: %X", size);
+	skb_spdm->len = 0;
 	skb_spdm->data_len = 0;
+	skb_spdm->tail = 0;
 	skb_put_data(skb_spdm, some_data, size);
+	printk(KERN_ALERT "[KERNEL] SPDM skb_data_ptr: %x", skb_spdm->data);
+	printk(KERN_ALERT "[KERNEL] SPDM skb_tail_ptr: %x", skb_spdm->tail);
 	int i;
 	for(i = 0; i < size; i++)
-		printk(KERN_ALERT "		SPDM skb_spdm->data[%d] = 0x%02X %c", i, skb_spdm->data[i], skb_spdm->data[i]);
+		printk(KERN_ALERT "[KERNEL] SPDM skb_spdm->data[%d] = 0x%02X \n", i, skb_spdm->data[i]);
 	skb_spdm->cb[47] = 0xF;
-	e1000_xmit_frame(skb_spdm, global_spdm_netdev);
+	e1000_spdm_xmit_frame(skb_spdm, global_spdm_netdev, 1);
 	return 0;
-	/*struct virtio_blk *vblk = disk->private_data;
-	struct request_queue *q = vblk->disk->queue;
-	struct request *req;
-	int err;
-
-	req = blk_get_request(q, op | REQ_OP_WRITE, 0);
-	if (IS_ERR(req))
-		return PTR_ERR(req);
-
-	err = blk_rq_map_kern(q, req, some_data, size, GFP_KERNEL);
-	if (err)
-		goto out;
-
-	req->__sector = pos;
-	req->spdm_original_req = main_req;
-	blk_execute_rq(vblk->disk->queue, vblk->disk, req, true);
-
-	// not sure what this does
-	err = blk_status_to_errno(virtblk_result(blk_mq_rq_to_pdu(req)));
-out:
-	blk_put_request(req);
-	return err;*/
 }
 
 static void e1000_next_buffer_from_rx_ring (struct e1000_rx_ring* rx_ring, char *buf, size_t *len);
@@ -1628,14 +1614,14 @@ int e1000_open(struct net_device *netdev)
 	ew32(ICS, E1000_ICS_LSC);
 
 	// get_version, get_capabilities, and negotiate_algorithms
-	printk(KERN_INFO "	DEBUG: spdm_init_connection was called!");
+	printk(KERN_INFO "[KERNEL] spdm_init_connection was called!");
 	status = spdm_init_connection(
 			global_spdm_context,
 			(m_exe_connection & EXE_CONNECTION_VERSION_ONLY) != 0);
 	if (RETURN_ERROR(status)) {
-		printk(KERN_ALERT "Error on spdm_init_connection.");
+		printk(KERN_ALERT "[KERNEL] Error on spdm_init_connection.");
 	} else {
-		printk(KERN_ALERT "SpdmContext initialized.");
+		printk(KERN_ALERT "[KERNEL] SpdmContext initialized.");
 	}
 
 	return E1000_SUCCESS;
@@ -3116,7 +3102,8 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 		buffer_info->dma = dma_map_single(&pdev->dev,
 						  skb->data + offset,
 						  size, DMA_TO_DEVICE);
-		printk(KERN_INFO "	DEBUG: dma_map_single ok!");
+		printk(KERN_INFO "[KERNEL] dma_map_single size: %d", size);
+		printk(KERN_INFO "[KERNEL] dma_map_single ok!");
 		if (dma_mapping_error(&pdev->dev, buffer_info->dma))
 			goto dma_error;
 		buffer_info->next_to_watch = i;
@@ -3131,10 +3118,10 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 		}
 	}
 
-	printk(KERN_INFO "	DEBUG: outside loop ok!");
+	printk(KERN_INFO "[KERNEL] outside loop ok!");
 
 	for (f = 0; f < nr_frags; f++) {
-		printk(KERN_INFO "	DEBUG: inside for loop!");
+		printk(KERN_INFO "[KERNEL] inside for loop!");
 		const struct skb_frag_struct *frag;
 
 		frag = &skb_shinfo(skb)->frags[f];
@@ -3187,19 +3174,19 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 	/* multiply data chunks by size of headers */
 	bytecount = ((segs - 1) * skb_headlen(skb)) + skb->len;
 
-	printk(KERN_INFO "	Seeting tx_ring!");
+	printk(KERN_INFO "[KERNEL] tx_ring!");
 
 	tx_ring->buffer_info[i].skb = skb;
 	tx_ring->buffer_info[i].segs = segs;
 	tx_ring->buffer_info[i].bytecount = bytecount;
 	tx_ring->buffer_info[first].next_to_watch = i;
 
-	printk(KERN_INFO "	DEBUG: tx_ring ok!");
+	printk(KERN_INFO "[KERNEL] tx_ring ok!");
 
 	return count;
 
 dma_error:
-	printk(KERN_INFO "	DEBUG: dma_error was called!");
+	printk(KERN_INFO "[KERNEL] dma_error was called!");
 	dev_err(&pdev->dev, "TX DMA map failed\n");
 	buffer_info->dma = 0;
 	if (count)
@@ -3210,16 +3197,16 @@ dma_error:
 			i += tx_ring->count;
 		i--;
 		buffer_info = &tx_ring->buffer_info[i];
-		printk(KERN_INFO "	DEBUG: e1000_unmap_and_free_tx_resource was called!");
+		printk(KERN_INFO "[KERNEL] e1000_unmap_and_free_tx_resource was called!");
 		e1000_unmap_and_free_tx_resource(adapter, buffer_info);
 	}
 
 	return 0;
 }
 
-static void e1000_tx_queue(struct e1000_adapter *adapter,
+static void e1000_spdm_tx_queue(struct e1000_adapter *adapter,
 			   struct e1000_tx_ring *tx_ring, int tx_flags,
-			   int count)
+			   int count, uint8_t spdm_msg_type)
 {
 	struct e1000_tx_desc *tx_desc = NULL;
 	struct e1000_tx_buffer *buffer_info;
@@ -3257,6 +3244,7 @@ static void e1000_tx_queue(struct e1000_adapter *adapter,
 		tx_desc->lower.data =
 			cpu_to_le32(txd_lower | buffer_info->length);
 		tx_desc->upper.data = cpu_to_le32(txd_upper);
+		tx_desc->spdm_msg_type = spdm_msg_type;
 		if (unlikely(++i == tx_ring->count))
 			i = 0;
 	}
@@ -3347,10 +3335,10 @@ static int e1000_maybe_stop_tx(struct net_device *netdev,
 }
 
 #define TXD_USE_COUNT(S, X) (((S) + ((1 << (X)) - 1)) >> (X))
-static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
-				    struct net_device *netdev)
+static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
+					struct net_device *netdev, uint8_t spdm_msg_type)
 {
-	//printk(KERN_INFO "	DEBUG: e1000_xmit_frame was called!");
+	//printk(KERN_INFO "	DEBUG: e1000_spdm_xmit_frame was called!");
 	
 	struct e1000_adapter *adapter = netdev_priv(netdev);
 	struct e1000_hw *hw = &adapter->hw;
@@ -3414,8 +3402,8 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	/* Alteração para bugar pacote saindo */
 
 	unsigned char *buffer_start = skb->data;
-	printk(KERN_INFO "	DEBUG: Inside e1000_xmit_frame!");
-	printk(KERN_INFO "	DEBUG: len:%02X!", len);
+	printk(KERN_INFO "[KERNEL]\t Inside e1000_spdm_xmit_frame!");
+	printk(KERN_INFO "[KERNEL]\t len:%02X!", len);
    	//printk(KERN_INFO "    DEBUG KERNEL: len:%d", len);
 
 		//for(teste = 0; teste < len; teste++){
@@ -3427,8 +3415,13 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	 * To WA this issue, pad all small packets manually.
 	 */
 
-	printk(KERN_INFO "	DEBUG: ETH_ZLEN:%02X!", ETH_ZLEN);
+	printk(KERN_INFO "[KERNEL]\t ETH_ZLEN:%02X!", ETH_ZLEN);
 	
+	// TODO: verificar se o driver original retornava NETDEV_TX_OK aqui
+	if(!spdm_msg_type)
+		if (eth_skb_pad(skb))
+			return NETDEV_TX_OK;
+
 	if(!(skb->cb[47] > 0))
 		if (eth_skb_pad(skb))
 			return NETDEV_TX_OK;
@@ -3565,9 +3558,8 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 		netdev_sent_queue(netdev, skb->len);
 		skb_tx_timestamp(skb);
 
-		e1000_tx_queue(adapter, tx_ring, tx_flags, count);
-
-		printk(KERN_INFO "	DEBUG: e1000_tx_queue was called!");
+		e1000_spdm_tx_queue(adapter, tx_ring, tx_flags, count, spdm_msg_type);
+		printk(KERN_INFO "[KERNEL] e1000_spdm_tx_queue was called!");
 
 		/* 82544 potentially requires twice as many data descriptors
 		 * in order to guarantee buffers don't end on evenly-aligned
@@ -3577,13 +3569,13 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 			desc_needed += MAX_SKB_FRAGS + 1;
 
 		/* Make sure there is space in the ring for the next send. */
-		printk(KERN_INFO "	DEBUG: e1000_maybe_stop_tx was called!");
+		printk(KERN_INFO "[KERNEL] e1000_maybe_stop_tx was called!");
 		e1000_maybe_stop_tx(netdev, tx_ring, desc_needed);
-		printk(KERN_INFO "	DEBUG: after e1000_maybe_stop_tx was called!");
+		printk(KERN_INFO "[KERNEL] after e1000_maybe_stop_tx was called!");
 
 		if (!skb->xmit_more ||
 		    netif_xmit_stopped(netdev_get_tx_queue(netdev, 0))) {
-			printk(KERN_INFO "	DEBUG: big if was called!");
+			//printk(KERN_INFO "	DEBUG: big if was called!");
 			writel(tx_ring->next_to_use, hw->hw_addr + tx_ring->tdt);
 			/* we need this if more than one processor can write to
 			 * our tail at a time, it synchronizes IO on IA64/Altix
@@ -3592,16 +3584,23 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 			mmiowb();
 		}
 	} else {
-		printk(KERN_INFO "	DEBUG: dev_kfree_skb_any was called!");
+		printk(KERN_INFO "[KERNEL] dev_kfree_skb_any was called!");
 		dev_kfree_skb_any(skb);
-		printk(KERN_INFO "	DEBUG: after e1000_maybe_stop_tx was called!");
+		printk(KERN_INFO "[KERNEL] after e1000_maybe_stop_tx was called!");
 		tx_ring->buffer_info[first].time_stamp = 0;
 		tx_ring->next_to_use = first;
 	}
 
-	printk(KERN_INFO "	DEBUG: NETDEV!");
+	printk(KERN_INFO "[KERNEL] NETDEV!");
 
 	return NETDEV_TX_OK;
+
+}
+
+static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
+				    struct net_device *netdev)
+{
+	return e1000_spdm_xmit_frame(skb, netdev, 0);
 }
 
 #define NUM_REGS 38 /* 1 based count */
@@ -4663,8 +4662,8 @@ static struct sk_buff *e1000_copybreak(struct e1000_adapter *adapter,
 // TODO: Fazer o e1000_clean_rx_irq depender deste aqui!
 static void e1000_next_buffer_from_rx_ring (struct e1000_rx_ring* rx_ring, char* buf, size_t* len)
 {
-	struct net_device *netdev = global_spdm_netdev;
-	struct e1000_adapter *adapter = netdev_priv(netdev);
+	//struct net_device *netdev = global_spdm_netdev;
+	//struct e1000_adapter *adapter = netdev_priv(netdev);
 
 	unsigned int i = rx_ring->next_to_clean;
 	struct e1000_rx_desc* rx_desc = E1000_RX_DESC(*rx_ring, i);
@@ -4716,7 +4715,7 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 		prefetch(data);
 		skb = e1000_copybreak(adapter, buffer_info, length, data);
 
-		printk(KERN_INFO "	DEBUG: e1000_clean_rx_irq was called, status: %d", status);
+		printk(KERN_INFO "[KERNEL] e1000_clean_rx_irq was called, status: %d", status);
 
 		if (!skb) {
 			unsigned int frag_len = e1000_frag_len(adapter);
@@ -4740,16 +4739,10 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 		unsigned char *buffer_start = skb->data;
 		int teste = 0;
 
+		printk(KERN_INFO "[KERNEL] length = %d\n", length);
 		for(teste = 0; teste < length; teste++){
-			printk(KERN_INFO "	DEBUG: data = %02X", buffer_start[teste]);
-			//buffer_start[teste] = buffer_start[teste] + 1; 
+			printk(KERN_INFO "[KERNEL] data = %02X %c\n", buffer_start[teste], buffer_start[teste]);
 		}
-
-		/*printk(KERN_INFO "	DEBUG: e1000_clean_rx_irq was called, skb->data_len: %d", skb->data_len);
-		printk(KERN_INFO "	DEBUG: e1000_clean_rx_irq was called, skb->data: %s", skb->data);
-		printk(KERN_INFO "	DEBUG: e1000_clean_rx_irq was called, length: %d", length);
-		printk(KERN_INFO "	DEBUG: e1000_clean_rx_irq was called, data: %X", data);*/
-		
 
 		if (++i == rx_ring->count)
 			i = 0;
@@ -4781,6 +4774,7 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 		}
 
 		if (unlikely(rx_desc->errors & E1000_RXD_ERR_FRAME_ERR_MASK)) {
+			printk(KERN_INFO "[KERNEL] Packet rx error: %d\n", rx_desc->errors);
 			if (e1000_tbi_should_accept(adapter, status,
 						    rx_desc->errors,
 						    length, data)) {
@@ -4794,27 +4788,34 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 		}
 
 process_skb:
-		total_rx_bytes += (length - 4); /* don't count FCS */
-		total_rx_packets++;
+		if (!rx_desc->spdm_msg_type)
+		{
+			total_rx_bytes += (length - 4); /* don't count FCS */
+			total_rx_packets++;
 
-		if (likely(!(netdev->features & NETIF_F_RXFCS)))
-			/* adjust length to remove Ethernet CRC, this must be
-			 * done after the TBI_ACCEPT workaround above
-			 */
-			length -= 4;
+			if (likely(!(netdev->features & NETIF_F_RXFCS)))
+				/* adjust length to remove Ethernet CRC, this must be
+				 * done after the TBI_ACCEPT workaround above
+				 */
+				length -= 4;
 
-		if (buffer_info->rxbuf.data == NULL)
-			skb_put(skb, length);
-		else /* copybreak skb */
-			skb_trim(skb, length);
+			if (buffer_info->rxbuf.data == NULL)
+				skb_put(skb, length);
+			else /* copybreak skb */
+				skb_trim(skb, length);
 
-		/* Receive Checksum Offload */
-		e1000_rx_checksum(adapter,
-				  (u32)(status) |
-				  ((u32)(rx_desc->errors) << 24),
-				  le16_to_cpu(rx_desc->csum), skb);
+			/* Receive Checksum Offload */
+			e1000_rx_checksum(adapter,
+					  (u32)(status) |
+					  ((u32)(rx_desc->errors) << 24),
+					  le16_to_cpu(rx_desc->csum), skb);
 
-		e1000_receive_skb(adapter, status, rx_desc->special, skb);
+			e1000_receive_skb(adapter, status, rx_desc->special, skb);
+		}
+		else
+		{
+			printk(KERN_INFO "[KERNEL] SPDM message received through e1000_clean_rx_irq\n");
+		}
 
 next_desc:
 		rx_desc->status = 0;

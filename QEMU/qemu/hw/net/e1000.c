@@ -387,7 +387,7 @@ return_status e1000_spdm_send (
   IN     uint64                  Timeout
   ) 
 { 
-    printf("e1000_spdm_send\n");
+    printf("[QEMU] e1000_spdm_send\n");
 
     if (RequestSize > sizeof(e1000_spdm_buf)) {
         printf("RequestSize too large %llu\n", RequestSize);
@@ -404,93 +404,97 @@ return_status e1000_spdm_send (
 		.iov_base = Request,
 		.iov_len = RequestSize,
 	};
-	e1000_spdm_send_arbitrary_data(&iov, 1);
 
+	e1000_spdm_send_arbitrary_data(&iov, 1);
     return RETURN_SUCCESS;
 }
 
 static uint64_t rx_desc_base(E1000State *s);
+static ssize_t
+e1000_spdm_receive_iov(E1000State *s, const struct iovec *iov, int iovcnt, uint8_t spdm_msg_type);
 
-void e1000_spdm_send_arbitrary_data(const struct iovec *iov, int iovcnt){
-
+void e1000_spdm_send_arbitrary_data(const struct iovec *iov, int iovcnt)
+{
     E1000State *s = e1000_state_global;
+	e1000_spdm_receive_iov(s, iov, iovcnt, 1);
+	return;
 
-    PCIDevice *d = PCI_DEVICE(s);
-    struct e1000_rx_desc desc;
-    dma_addr_t base;
-    unsigned int n, rdt;
-    uint32_t rdh_start;
-    uint16_t vlan_special = 0;
-    uint8_t vlan_status = 0;
-    uint8_t min_buf[MIN_BUF_SIZE];
-    struct iovec min_iov;
-    uint8_t *filter_buf = iov->iov_base;
-    size_t size = iov_size(iov, iovcnt);
-    size_t iov_ofs = 0;
-    size_t desc_offset;
-    size_t desc_size;
-    size_t total_size;
+    //PCIDevice *d = PCI_DEVICE(s);
+    //struct e1000_rx_desc desc;
+    //dma_addr_t base;
+    //unsigned int n, rdt;
+    //uint32_t rdh_start;
+    //uint16_t vlan_special = 0;
+    //uint8_t vlan_status = 0;
+    //uint8_t min_buf[MIN_BUF_SIZE];
+    //struct iovec min_iov;
+    //uint8_t *filter_buf = iov->iov_base;
+    //size_t size = iov_size(iov, iovcnt);
+    //size_t iov_ofs = 0;
+    //size_t desc_offset;
+    //size_t desc_size;
+    //size_t total_size;
 
-    rdh_start = s->mac_reg[RDH];
-    desc_offset = 0;
-    total_size = size; //+ e1000x_fcs_len(s->mac_reg);
-    do {
-		// TODO: verificar o tamanho máximo do buffer pra alocar no DMA
-        desc_size = total_size - desc_offset;
-        if (desc_size > s->rxbuf_size) {
-            desc_size = s->rxbuf_size;
-        }
-        base = rx_desc_base(s) + sizeof(desc) * s->mac_reg[RDH];
-        pci_dma_read(d, base, &desc, sizeof(desc));
-        desc.special = vlan_special;
-        desc.status |= (vlan_status | E1000_RXD_STAT_DD);
-        if (desc.buffer_addr) {
-            if (desc_offset < size) {
-                size_t iov_copy;
-                hwaddr ba = le64_to_cpu(desc.buffer_addr);
-                size_t copy_size = size - desc_offset;
-                if (copy_size > s->rxbuf_size) {
-                    copy_size = s->rxbuf_size;
-                }
-                do {
-                    iov_copy = MIN(copy_size, iov->iov_len - iov_ofs);
-                    pci_dma_write(d, ba, iov->iov_base + iov_ofs, iov_copy);
-                    copy_size -= iov_copy;
-                    ba += iov_copy;
-                    iov_ofs += iov_copy;
-                    if (iov_ofs == iov->iov_len) {
-                        iov++;
-                        iov_ofs = 0;
-                    }
-                } while (copy_size);
-            }
-            desc_offset += desc_size;
-            desc.length = cpu_to_le16(desc_size);
-            if (desc_offset >= total_size) {
-                desc.status |= E1000_RXD_STAT_EOP | E1000_RXD_STAT_IXSM;
-            } else {
-                /* Guest zeroing out status is not a hardware requirement.
-                   Clear EOP in case guest didn't do it. */
-                desc.status &= ~E1000_RXD_STAT_EOP;
-            }
-        } else { // as per intel docs; skip descriptors with null buf addr
-            DBGOUT(RX, "Null RX descriptor!!\n");
-        }
-        pci_dma_write(d, base, &desc, sizeof(desc));
+    //rdh_start = s->mac_reg[RDH];
+    //desc_offset = 0;
+    //total_size = size; //+ e1000x_fcs_len(s->mac_reg);
+    //do {
+	//	// TODO: verificar o tamanho máximo do buffer pra alocar no DMA
+    //    desc_size = total_size - desc_offset;
+    //    if (desc_size > s->rxbuf_size) {
+    //        desc_size = s->rxbuf_size;
+    //    }
+    //    base = rx_desc_base(s) + sizeof(desc) * s->mac_reg[RDH];
+    //    pci_dma_read(d, base, &desc, sizeof(desc));
+    //    desc.special = vlan_special;
+    //    desc.status |= (vlan_status | E1000_RXD_STAT_DD);
+    //    if (desc.buffer_addr) {
+    //        if (desc_offset < size) {
+    //            size_t iov_copy;
+    //            hwaddr ba = le64_to_cpu(desc.buffer_addr);
+    //            size_t copy_size = size - desc_offset;
+    //            if (copy_size > s->rxbuf_size) {
+    //                copy_size = s->rxbuf_size;
+    //            }
+    //            do {
+    //                iov_copy = MIN(copy_size, iov->iov_len - iov_ofs);
+    //                pci_dma_write(d, ba, iov->iov_base + iov_ofs, iov_copy);
+    //                copy_size -= iov_copy;
+    //                ba += iov_copy;
+    //                iov_ofs += iov_copy;
+    //                if (iov_ofs == iov->iov_len) {
+    //                    iov++;
+    //                    iov_ofs = 0;
+    //                }
+    //            } while (copy_size);
+    //        }
+    //        desc_offset += desc_size;
+    //        desc.length = cpu_to_le16(desc_size);
+    //        if (desc_offset >= total_size) {
+    //            desc.status |= E1000_RXD_STAT_EOP | E1000_RXD_STAT_IXSM;
+    //        } else {
+    //            /* Guest zeroing out status is not a hardware requirement.
+    //               Clear EOP in case guest didn't do it. */
+    //            desc.status &= ~E1000_RXD_STAT_EOP;
+    //        }
+    //    } else { // as per intel docs; skip descriptors with null buf addr
+    //        DBGOUT(RX, "Null RX descriptor!!\n");
+    //    }
+    //    pci_dma_write(d, base, &desc, sizeof(desc));
 
-        if (++s->mac_reg[RDH] * sizeof(desc) >= s->mac_reg[RDLEN])
-            s->mac_reg[RDH] = 0;
-        /* see comment in start_xmit; same here */
-        if (s->mac_reg[RDH] == rdh_start ||
-            rdh_start >= s->mac_reg[RDLEN] / sizeof(desc)) {
-            DBGOUT(RXERR, "RDH wraparound @%x, RDT %x, RDLEN %x\n",
-                   rdh_start, s->mac_reg[RDT], s->mac_reg[RDLEN]);
-            //e1000_receiver_overrun(s, total_size);
-            return -1;
-        }
-    } while (desc_offset < total_size);
+    //    if (++s->mac_reg[RDH] * sizeof(desc) >= s->mac_reg[RDLEN])
+    //        s->mac_reg[RDH] = 0;
+    //    /* see comment in start_xmit; same here */
+    //    if (s->mac_reg[RDH] == rdh_start ||
+    //        rdh_start >= s->mac_reg[RDLEN] / sizeof(desc)) {
+    //        DBGOUT(RXERR, "RDH wraparound @%x, RDT %x, RDLEN %x\n",
+    //               rdh_start, s->mac_reg[RDT], s->mac_reg[RDLEN]);
+    //        //e1000_receiver_overrun(s, total_size);
+    //        return -1;
+    //    }
+    //} while (desc_offset < total_size);
 
-    return;
+    //return;
 }
 
 
@@ -501,7 +505,7 @@ return_status e1000_spdm_receive (
   IN     uint64                  Timeout
   ) 
 { 
-    printf("e1000_spdm_receive\n");
+    printf("[QEMU] e1000_spdm_receive\n");
 
     if (*ResponseSize < atomic_read(&e1000_spdm_buf_size)) {
         printf("*ResponseSize too small %llu\n", *ResponseSize);
@@ -535,7 +539,7 @@ void e1000_spdm_server_callback (void* SpdmContext)
 	uintn                        HashSize;
 	uint8_t                        Index;
 
-	printf("\te1000_spdm_server_callback before\n");
+	printf("[QEMU]\t e1000_spdm_server_callback before\n");
 
 	if (AlgoProvisioned) {
 		return ;
@@ -553,7 +557,7 @@ void e1000_spdm_server_callback (void* SpdmContext)
 	// AlgoProvisioned = TRUE;
 	atomic_set(&AlgoProvisioned, TRUE);
 
-	printf("\tvirtio_blk_spdm_server_callback after\n");
+	printf("[QEMU]\t e1000_spdm_server_callback after\n");
 
 	DataSize = sizeof(Data32);
 	spdm_get_data (SpdmContext, SPDM_DATA_MEASUREMENT_HASH_ALGO, &Parameter, &Data32, &DataSize);
@@ -622,7 +626,7 @@ void e1000_spdm_server_callback (void* SpdmContext)
 		printf ("SpdmSetData - %x\n", (uint32_t)Status);
 	}
 
-	printf("\tvirtio_blk_spdm_server_callback end\n");
+	printf("[QEMU]\t e1000_spdm_server_callback end\n");
 
 	return ;
 }
@@ -633,7 +637,7 @@ static void* e1000_spdm_io_thread(void *opaque)
     return_status Status;
 
     while (1) {
-        printf("e1000_spdm_io_thread() loop\n");
+        printf("[QEMU] e1000_spdm_io_thread() loop\n");
         qemu_mutex_lock(&e1000_spdm_io_mutex);
         if (!e1000_spdm_receive_is_ready) {
             qemu_cond_wait(&e1000_spdm_io_cond, &e1000_spdm_io_mutex);
@@ -681,8 +685,7 @@ static int e1000_spdm_init(E1000State *s) {
         return -1;
     }
     spdm_init_context(s->spdm_context);
-	printf("e1000_spdm_init: SPDM context initialized\n");
-    //BLK_SPDM_PRINT("virtio_blk_spdm_init: SPDM context initialized\n");
+	printf("[QEMU] e1000_spdm_init: SPDM context initialized\n");
 
     spdm_register_device_io_func (s->spdm_context, e1000_spdm_send, e1000_spdm_receive);
     spdm_register_transport_layer_func (s->spdm_context, spdm_transport_mctp_encode_message, spdm_transport_mctp_decode_message);
@@ -1099,9 +1102,6 @@ xmit_seg(E1000State *s)
     s->mac_reg[GOTCH] = s->mac_reg[TOTH];
 }
 
-static ssize_t
-e1000_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt);
-
 static int
 process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
 {
@@ -1179,34 +1179,47 @@ process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
     //Aqui vem o tratamento das mensagens SPDM
 
     int i;
-    printf("tp->size: %02X\n", tp->size);
-    for(i = 0; i < 5; i++)
-        printf("tp->data: %02X\n", tp->data[i]);
+    printf("[QEMU] tp->size: %02X\n", tp->size);
+    for(i = 0; i < tp->size; i++)
+        printf("[QEMU] tp->data: %02X %c\n", tp->data[i], tp->data[i]);
 
-    memcpy(e1000_spdm_buf, tp->data, tp->size);
-    e1000_spdm_buf_size = tp->size;
-    e1000_spdm_receive_is_ready = 1;
-    qemu_cond_signal(&e1000_spdm_io_cond);
-    qemu_mutex_unlock(&e1000_spdm_io_mutex);
-    //e1000_spdm_send_arbitrary_data(s->nic->ncs, &iov, 1);
-
-    return 0;
-
-    if (!(txd_lower & E1000_TXD_CMD_EOP))
-        return;
-    if (!(tp->cptse && tp->size < tp->tso_props.hdr_len)) {
-		if (!(s->mac_reg[TCTL] & E1000_TCTL_EN)) {
-			DBGOUT(TX, "tx disabled\n");
-			printf("TX disabled!\n");
-			return -1;
+	if (dp->spdm_msg_type)
+	{
+		// Mensagem SPDM
+		memcpy(e1000_spdm_buf, tp->data, tp->size);
+		e1000_spdm_buf_size = tp->size;
+		e1000_spdm_receive_is_ready = 1;
+		qemu_cond_signal(&e1000_spdm_io_cond);
+		qemu_mutex_unlock(&e1000_spdm_io_mutex);
+	}
+	else
+	{
+		// Mensagem de aplicação
+		if (!(txd_lower & E1000_TXD_CMD_EOP))
+			return 0;
+		if (!(tp->cptse && tp->size < tp->tso_props.hdr_len)) {
+			if (!(s->mac_reg[TCTL] & E1000_TCTL_EN)) {
+				DBGOUT(TX, "tx disabled\n");
+				printf("TX disabled!\n");
+				// CLeanup
+				tp->tso_frames = 0;
+				tp->sum_needed = 0;
+				tp->vlan_needed = 0;
+				tp->size = 0;
+				tp->cptse = 0;
+				return -1;
+			}
+			xmit_seg(s);
 		}
-        xmit_seg(s);
-    }
-    tp->tso_frames = 0;
-    tp->sum_needed = 0;
-    tp->vlan_needed = 0;
-    tp->size = 0;
-    tp->cptse = 0;
+	}
+
+	// CLeanup
+	tp->tso_frames = 0;
+	tp->sum_needed = 0;
+	tp->vlan_needed = 0;
+	tp->size = 0;
+	tp->cptse = 0;
+	return 0;
 }
 
 static uint32_t
@@ -1236,7 +1249,7 @@ static uint64_t tx_desc_base(E1000State *s)
 static void
 start_xmit(E1000State *s)
 {
-    printf("Start XMIT!\n");
+    printf("[QEMU] Start XMIT!\n");
     PCIDevice *d = PCI_DEVICE(s);
     dma_addr_t base;
     struct e1000_tx_desc desc;
@@ -1257,9 +1270,9 @@ start_xmit(E1000State *s)
                (void *)(intptr_t)desc.buffer_addr, desc.lower.data,
                desc.upper.data);
 
-        printf("Chamou process_tx_desc!");
+        printf("[QEMU] Chamou process_tx_desc!\n");
         if (process_tx_desc(s, &desc)) return;
-        printf("Passou process_tx_desc!");
+        printf("[QEMU] Passou process_tx_desc!\n");
         cause |= txdesc_writeback(s, base, &desc);
 
         if (++s->mac_reg[TDH] * sizeof(desc) >= s->mac_reg[TDLEN])
@@ -1377,9 +1390,9 @@ e1000_receiver_overrun(E1000State *s, size_t size)
 }
 
 static ssize_t
-e1000_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt)
+e1000_spdm_receive_iov(E1000State *s, const struct iovec *iov, int iovcnt, uint8_t spdm_msg_type)
 {
-    E1000State *s = qemu_get_nic_opaque(nc);
+    //E1000State *s = qemu_get_nic_opaque(nc);
     PCIDevice *d = PCI_DEVICE(s);
     struct e1000_rx_desc desc;
     dma_addr_t base;
@@ -1396,62 +1409,66 @@ e1000_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt)
     size_t desc_size;
     size_t total_size;
 
-    if (!e1000x_hw_rx_enabled(s->mac_reg)) {
-        return -1;
-    }
+	if (!spdm_msg_type)
+	{
+		if (!e1000x_hw_rx_enabled(s->mac_reg)) {
+			return -1;
+		}
 
-    if (timer_pending(s->flush_queue_timer) && 0) {
-        return 0;
-    }
+		if (timer_pending(s->flush_queue_timer) && 0) {
+			return 0;
+		}
 
-    /* Pad to minimum Ethernet frame length */
-    if (size < sizeof(min_buf)) {
-        iov_to_buf(iov, iovcnt, 0, min_buf, size);
-        memset(&min_buf[size], 0, sizeof(min_buf) - size);
-        min_iov.iov_base = filter_buf = min_buf;
-        min_iov.iov_len = size = sizeof(min_buf);
-        iovcnt = 1;
-        iov = &min_iov;
-    } else if (iov->iov_len < MAXIMUM_ETHERNET_HDR_LEN) {
-        /* This is very unlikely, but may happen. */
-        iov_to_buf(iov, iovcnt, 0, min_buf, MAXIMUM_ETHERNET_HDR_LEN);
-        filter_buf = min_buf;
-    }
+		/* Pad to minimum Ethernet frame length */
+		if (size < sizeof(min_buf)) {
+			iov_to_buf(iov, iovcnt, 0, min_buf, size);
+			memset(&min_buf[size], 0, sizeof(min_buf) - size);
+			min_iov.iov_base = filter_buf = min_buf;
+			min_iov.iov_len = size = sizeof(min_buf);
+			iovcnt = 1;
+			iov = &min_iov;
+		} else if (iov->iov_len < MAXIMUM_ETHERNET_HDR_LEN) {
+			/* This is very unlikely, but may happen. */
+			iov_to_buf(iov, iovcnt, 0, min_buf, MAXIMUM_ETHERNET_HDR_LEN);
+			filter_buf = min_buf;
+		}
 
-    /* Discard oversized packets if !LPE and !SBP. */
-    if (e1000x_is_oversized(s->mac_reg, size)) {
-        return size;
-    }
+		/* Discard oversized packets if !LPE and !SBP. */
+		if (e1000x_is_oversized(s->mac_reg, size)) {
+			return size;
+		}
 
-    if (!receive_filter(s, filter_buf, size)) {
-        return size;
-    }
+		if (!receive_filter(s, filter_buf, size)) {
+			return size;
+		}
 
-    if (e1000x_vlan_enabled(s->mac_reg) &&
-        e1000x_is_vlan_packet(filter_buf, le16_to_cpu(s->mac_reg[VET]))) {
-        vlan_special = cpu_to_le16(lduw_be_p(filter_buf + 14));
-        iov_ofs = 4;
-        if (filter_buf == iov->iov_base) {
-            memmove(filter_buf + 4, filter_buf, 12);
-        } else {
-            iov_from_buf(iov, iovcnt, 4, filter_buf, 12);
-            while (iov->iov_len <= iov_ofs) {
-                iov_ofs -= iov->iov_len;
-                iov++;
-            }
-        }
-        vlan_status = E1000_RXD_STAT_VP;
-        size -= 4;
-    }
+		if (e1000x_vlan_enabled(s->mac_reg) &&
+			e1000x_is_vlan_packet(filter_buf, le16_to_cpu(s->mac_reg[VET]))) {
+			vlan_special = cpu_to_le16(lduw_be_p(filter_buf + 14));
+			iov_ofs = 4;
+			if (filter_buf == iov->iov_base) {
+				memmove(filter_buf + 4, filter_buf, 12);
+			} else {
+				iov_from_buf(iov, iovcnt, 4, filter_buf, 12);
+				while (iov->iov_len <= iov_ofs) {
+					iov_ofs -= iov->iov_len;
+					iov++;
+				}
+			}
+			vlan_status = E1000_RXD_STAT_VP;
+			size -= 4;
+		}
+	}
 
     rdh_start = s->mac_reg[RDH];
     desc_offset = 0;
-    total_size = size + e1000x_fcs_len(s->mac_reg);
+    total_size = size + (spdm_msg_type ? 0 : e1000x_fcs_len(s->mac_reg));
     if (!e1000_has_rxbufs(s, total_size)) {
         e1000_receiver_overrun(s, total_size);
         return -1;
     }
     do {
+		// TODO: verificar o tamanho máximo do buffer pra alocar no DMA
         desc_size = total_size - desc_offset;
         if (desc_size > s->rxbuf_size) {
             desc_size = s->rxbuf_size;
@@ -1460,6 +1477,7 @@ e1000_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt)
         pci_dma_read(d, base, &desc, sizeof(desc));
         desc.special = vlan_special;
         desc.status |= (vlan_status | E1000_RXD_STAT_DD);
+		desc.spdm_msg_type = spdm_msg_type;
         if (desc.buffer_addr) {
             if (desc_offset < size) {
                 size_t iov_copy;
@@ -1518,6 +1536,13 @@ e1000_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt)
     set_ics(s, 0, n);
 
     return size;
+}
+
+static ssize_t
+e1000_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt)
+{
+    E1000State *s = qemu_get_nic_opaque(nc);
+	return e1000_spdm_receive_iov(s, iov, iovcnt, 0);
 }
 
 static ssize_t
