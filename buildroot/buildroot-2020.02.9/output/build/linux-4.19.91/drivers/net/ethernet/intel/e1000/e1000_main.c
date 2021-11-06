@@ -2908,9 +2908,9 @@ set_itr_now:
 #define E1000_TX_FLAGS_VLAN_MASK	0xffff0000
 #define E1000_TX_FLAGS_VLAN_SHIFT	16
 
-static int e1000_tso(struct e1000_adapter *adapter,
+static int e1000_spdm_tso(struct e1000_adapter *adapter,
 		     struct e1000_tx_ring *tx_ring, struct sk_buff *skb,
-		     __be16 protocol)
+		     __be16 protocol, u8 spdm_msg_type)
 {
 	struct e1000_context_desc *context_desc;
 	struct e1000_tx_buffer *buffer_info;
@@ -2968,6 +2968,8 @@ static int e1000_tso(struct e1000_adapter *adapter,
 		context_desc->tcp_seg_setup.fields.mss     = cpu_to_le16(mss);
 		context_desc->tcp_seg_setup.fields.hdr_len = hdr_len;
 		context_desc->cmd_and_length = cpu_to_le32(cmd_length);
+		
+		context_desc->spdm_msg_type = spdm_msg_type;
 
 		buffer_info->time_stamp = jiffies;
 		buffer_info->next_to_watch = i;
@@ -2982,9 +2984,9 @@ static int e1000_tso(struct e1000_adapter *adapter,
 	return false;
 }
 
-static bool e1000_tx_csum(struct e1000_adapter *adapter,
+static bool e1000_spdm_tx_csum(struct e1000_adapter *adapter,
 			  struct e1000_tx_ring *tx_ring, struct sk_buff *skb,
-			  __be16 protocol)
+			  __be16 protocol, u8 spdm_msg_type)
 {
 	struct e1000_context_desc *context_desc;
 	struct e1000_tx_buffer *buffer_info;
@@ -3025,6 +3027,8 @@ static bool e1000_tx_csum(struct e1000_adapter *adapter,
 	context_desc->upper_setup.tcp_fields.tucse = 0;
 	context_desc->tcp_seg_setup.data = 0;
 	context_desc->cmd_and_length = cpu_to_le32(cmd_len);
+
+	context_desc->spdm_msg_type = spdm_msg_type;
 
 	buffer_info->time_stamp = jiffies;
 	buffer_info->next_to_watch = i;
@@ -3208,10 +3212,10 @@ static void e1000_spdm_tx_queue(struct e1000_adapter *adapter,
 			   struct e1000_tx_ring *tx_ring, int tx_flags,
 			   int count, uint8_t spdm_msg_type)
 {
-	struct e1000_tx_desc *tx_desc = NULL;
-	struct e1000_tx_buffer *buffer_info;
-	u32 txd_upper = 0, txd_lower = E1000_TXD_CMD_IFCS;
-	unsigned int i;
+	volatile struct e1000_tx_desc *tx_desc = NULL;
+	volatile struct e1000_tx_buffer *buffer_info;
+	volatile u32 txd_upper = 0, txd_lower = E1000_TXD_CMD_IFCS;
+	volatile unsigned int i;
 
 	if (likely(tx_flags & E1000_TX_FLAGS_TSO)) {
 		txd_lower |= E1000_TXD_CMD_DEXT | E1000_TXD_DTYP_D |
@@ -3340,19 +3344,19 @@ static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
 {
 	//printk(KERN_INFO "	DEBUG: e1000_spdm_xmit_frame was called!");
 	
-	struct e1000_adapter *adapter = netdev_priv(netdev);
-	struct e1000_hw *hw = &adapter->hw;
-	struct e1000_tx_ring *tx_ring;
-	unsigned int first, max_per_txd = E1000_MAX_DATA_PER_TXD;
-	unsigned int max_txd_pwr = E1000_MAX_TXD_PWR;
-	unsigned int tx_flags = 0;
-	unsigned int len = skb_headlen(skb);
-	unsigned int nr_frags;
-	unsigned int mss;
-	int count = 0;
-	int tso;
-	unsigned int f;
-	__be16 protocol = vlan_get_protocol(skb);
+	volatile struct e1000_adapter *adapter = netdev_priv(netdev);
+	volatile struct e1000_hw *hw = &adapter->hw;
+	volatile struct e1000_tx_ring *tx_ring;
+	volatile unsigned int first, max_per_txd = E1000_MAX_DATA_PER_TXD;
+	volatile unsigned int max_txd_pwr = E1000_MAX_TXD_PWR;
+	volatile unsigned int tx_flags = 0;
+	volatile unsigned int len = skb_headlen(skb);
+	volatile unsigned int nr_frags;
+	volatile unsigned int mss;
+	volatile int count = 0;
+	volatile int tso;
+	volatile unsigned int f;
+	volatile __be16 protocol = vlan_get_protocol(skb);
 
 	/* This goes back to the question of how to logically map a Tx queue
 	 * to a flow.  Right now, performance is impacted slightly negatively
@@ -3406,10 +3410,10 @@ static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
 	printk(KERN_INFO "[KERNEL]\t len:%02X!", len);
    	//printk(KERN_INFO "    DEBUG KERNEL: len:%d", len);
 
-		//for(teste = 0; teste < len; teste++){
-			//printk(KERN_INFO "	buffer_start[%d]: %02X", teste, buffer_start[teste]);
-			//buffer_start[teste] = buffer_start[teste] + 1;
-		//}
+	for(teste = 0; teste < len; teste++){
+		printk(KERN_INFO "[KERNEL]\t skb->data[%02X]: %02X\n", teste, buffer_start[teste]);
+		//buffer_start[teste] = buffer_start[teste] + 1;
+	}
 	/* On PCI/PCI-X HW, if packet size is less than ETH_ZLEN,
 	 * packets may get corrupted during padding by HW.
 	 * To WA this issue, pad all small packets manually.
@@ -3434,8 +3438,6 @@ static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
 	 * overrun the FIFO, adjust the max buffer len if mss
 	 * drops.
 	 */
-
-
 	if (mss) {
 		u8 hdr_len;
 		max_per_txd = min(mss << 2, max_per_txd);
@@ -3523,7 +3525,7 @@ static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
 
 	first = tx_ring->next_to_use;
 
-	tso = e1000_tso(adapter, tx_ring, skb, protocol);
+	tso = e1000_spdm_tso(adapter, tx_ring, skb, protocol, spdm_msg_type);
 	if (tso < 0) {
 		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
@@ -3533,7 +3535,7 @@ static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
 		if (likely(hw->mac_type != e1000_82544))
 			tx_ring->last_tx_tso = true;
 		tx_flags |= E1000_TX_FLAGS_TSO;
-	} else if (likely(e1000_tx_csum(adapter, tx_ring, skb, protocol)))
+	} else if (likely(e1000_spdm_tx_csum(adapter, tx_ring, skb, protocol, spdm_msg_type)))
 		tx_flags |= E1000_TX_FLAGS_CSUM;
 
 	if (protocol == htons(ETH_P_IP))

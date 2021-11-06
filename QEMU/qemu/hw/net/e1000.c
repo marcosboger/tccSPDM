@@ -1124,7 +1124,7 @@ process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
             e1000x_read_tx_ctx_descr(xp, &tp->props);
             s->use_tso_for_migration = 0;
         }
-        return;
+        return 0;
     } else if (dtype == (E1000_TXD_CMD_DEXT | E1000_TXD_DTYP_D)) {
         // data descriptor
         if (tp->size == 0) {
@@ -1552,6 +1552,11 @@ e1000_receive(NetClientState *nc, const uint8_t *buf, size_t size)
         .iov_base = (uint8_t *)buf,
         .iov_len = size
     };
+
+	size_t i;
+	printf("[QEMU] e1000_receive! size: \n", size);
+	for (i = 0; i < size; ++i)
+		printf("[QEMU] rx_data[%d]: %02X %c\n", i, buf[i], buf[i]);
 
     return e1000_receive_iov(nc, &iov, 1);
 }

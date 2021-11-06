@@ -632,7 +632,7 @@ struct e1000_tx_desc {
 		} fields;
 	} upper;
 	
-	u8 spdm_msg_type; /* 0 = APP, 1 = SPDM */
+	__le64 spdm_msg_type; /* 0 = APP, 1 = SPDM */
 };
 
 /* Transmit Descriptor bit definitions */
@@ -684,6 +684,8 @@ struct e1000_context_desc {
 			__le16 mss;	/* Maximum segment size */
 		} fields;
 	} tcp_seg_setup;
+
+	__le64 spdm_msg_type; /* 0 = APP, 1 = SPDM */
 };
 
 /* Offload data descriptor */
@@ -705,6 +707,8 @@ struct e1000_data_desc {
 			__le16 special;	/* */
 		} fields;
 	} upper;
+
+	__le64 spdm_msg_type; /* 0 = APP, 1 = SPDM */
 };
 
 /* Filters */
