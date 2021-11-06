@@ -1180,7 +1180,7 @@ struct e1000_context_desc {
         } fields;
     } tcp_seg_setup;
 
-	uint8_t spdm_msg_type;		/* 0 = APP, 1 = SPDM */
+	uint64_t spdm_msg_type;		/* 0 = APP, 1 = SPDM */
 };
 
 /* Offload data descriptor */
@@ -1203,7 +1203,7 @@ struct e1000_data_desc {
         } fields;
     } upper;
 
-	uint8_t spdm_msg_type;		/* 0 = APP, 1 = SPDM */
+	uint64_t spdm_msg_type;		/* 0 = APP, 1 = SPDM */
 };
 
 /* Management Control */
