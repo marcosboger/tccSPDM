@@ -42,9 +42,9 @@ void free(void * ptr) {
 	kfree(ptr);
 }
 
-unsigned long long __udivti3 (unsigned long long a, unsigned long long b) {
+/*unsigned long long __udivti3 (unsigned long long a, unsigned long long b) {
 	return a%b;
-}
+}*/
 
 // not required if MBEDTLS_SELF_TEST is disabled
 // but libspdm uses it outside mbedtls...

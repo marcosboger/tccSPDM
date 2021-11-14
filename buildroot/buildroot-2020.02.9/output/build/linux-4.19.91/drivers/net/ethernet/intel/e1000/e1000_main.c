@@ -1762,8 +1762,8 @@ int e1000_open(struct net_device *netdev)
 				    m_use_slot_id, &global_session_id,
 				    &heartbeat_period, measurement_hash);
 	if (RETURN_ERROR(status)) {
-		printk("spdm_start_session - %x\n", (uint32)status);
-		return status;
+		printk("[KERNEL] spdm_start_session - status: %x \n", (uint32)status);
+		return -1;
 	}
 
 	// send an arbitraty message, so last_spdm_request_session_id is set at the responder
@@ -1777,8 +1777,8 @@ int e1000_open(struct net_device *netdev)
 						my_rsp,
 						&size);
 	if (RETURN_ERROR(status)) {
-		printk("spdm_send_receive_data error - %x\n", (uint32)status);
-		return status;
+		printk("[KERNEL] spdm_send_receive_data error - %x\n", (uint32)status);
+		return -1;
 	}
 
 
@@ -4830,8 +4830,13 @@ static void e1000_next_buffer_from_rx_ring (struct e1000_rx_ring* rx_ring, char*
 	struct e1000_rx_desc* rx_desc = E1000_RX_DESC(*rx_ring, i);
 	struct e1000_rx_buffer* info_buffer = &rx_ring->buffer_info[i];
 
-	*len = le16_to_cpu(rx_desc->length);
-	memcpy(buf, info_buffer->rxbuf.data, *len);
+	*len = 0;
+
+	if(rx_desc->status & E1000_RXD_STAT_DD){
+		*len = le16_to_cpu(rx_desc->length);
+		memcpy(buf, info_buffer->rxbuf.data, *len);
+		rx_desc->status = 0;
+	}
 }
 
 /**
