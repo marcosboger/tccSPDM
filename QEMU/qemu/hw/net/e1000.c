@@ -603,7 +603,7 @@ void e1000_spdm_server_callback (void* SpdmContext)
 		if (Res) {
 			zero_mem (&Parameter, sizeof(Parameter));
 			Parameter.location = SPDM_DATA_LOCATION_LOCAL;
-			spdm_set_data (SpdmContext, SPDM_DATA_PEER_PUBLIC_ROOT_CERT, &Parameter, Hash, HashSize);
+			spdm_set_data (SpdmContext, SPDM_DATA_PEER_PUBLIC_ROOT_CERT_HASH, &Parameter, Hash, HashSize);
 			// Do not free it.
 		}
 	}
