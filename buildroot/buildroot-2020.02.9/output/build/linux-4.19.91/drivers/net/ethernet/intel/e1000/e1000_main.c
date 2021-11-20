@@ -11,8 +11,10 @@
 
 #include "spdm_common_lib.h"
 #include <library/spdm_requester_lib.h>
+#include "spdm_requester_lib_internal.h"
 #include <library/spdm_transport_mctp_lib.h>
 #include <industry_standard/mctp.h>
+#include <../library/spdm_secured_message_lib/spdm_secured_message_lib_internal.h>
 
 #include "spdm_temp_emu.c"
 
@@ -29,7 +31,8 @@ static char e1000_driver_string[] = "Intel(R) PRO/1000 Network Driver";
 #define DRV_VERSION "7.3.21-k8-NAPI"
 const char e1000_driver_version[] = DRV_VERSION;
 static const char e1000_copyright[] = "Copyright (c) 1999-2006 Intel Corporation.";
-void* global_spdm_context;
+void* global_spdm_context = NULL;
+uint8 global_spdm_started = 0;
 uint32 global_session_id;
 
 /* e1000_pci_tbl - PCI Device ID Table
@@ -334,7 +337,6 @@ static int e1000_send_arbitrary_data(struct net_device *netdev, char *some_data,
 	int i;
 	for(i = 0; i < size; i++)
 		printk(KERN_ALERT "[KERNEL] SPDM skb_spdm->data[%d] = 0x%02X \n", i, skb_spdm->data[i]);
-	skb_spdm->cb[47] = 0xF;
 	e1000_spdm_xmit_frame(skb_spdm, global_spdm_netdev, 1);
 	return 0;
 }
@@ -1818,7 +1820,7 @@ int e1000_open(struct net_device *netdev)
 		return -1;
 	}
 
-
+	global_spdm_started = 1;
 
 	return E1000_SUCCESS;
 
@@ -3252,11 +3254,47 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 	unsigned int len = skb_headlen(skb);
 	unsigned int offset = 0, size, count = 0, i;
 	unsigned int f, bytecount, segs;
-
+	return_status status;
+    uint8_t * cipher_data;
+	uintn cipher_size;
+	char * copied_data;
+	size_t copied_size;
+	size_t to_copy_size;
+	size_t number = 0;
 
 	i = tx_ring->next_to_use;
 
 
+	if(global_spdm_context && global_spdm_started){
+		#define MAX_SPDM_PLAIN_TEXT_SIZE (MAX_SPDM_MESSAGE_BUFFER_SIZE - 512 + sizeof(mctp_message_header_t))
+	
+		to_copy_size = min(len, MAX_SPDM_PLAIN_TEXT_SIZE); 
+		cipher_data = (char*) kmalloc(MAX_SPDM_MESSAGE_BUFFER_SIZE, GFP_KERNEL);
+				if (cipher_data == NULL) {
+					printk(KERN_ERR "%s out of mem", __func__);
+					return 0;
+				}
+		copied_data = (char*) kmalloc(MAX_SPDM_MESSAGE_BUFFER_SIZE, GFP_KERNEL);
+				if (copied_data == NULL) {
+					printk(KERN_ERR "%s out of mem", __func__);
+					kfree(cipher_data);
+					return 0;
+				}
+
+		cipher_size = MAX_SPDM_MESSAGE_BUFFER_SIZE;
+		copied_size = sizeof(mctp_message_header_t);
+
+		memcpy(copied_data + copied_size, skb->data, to_copy_size);
+
+		status = ((spdm_context_t *)global_spdm_context)->transport_encode_message(global_spdm_context, &global_session_id, TRUE, TRUE, copied_size, copied_data, &cipher_size, cipher_data);
+	
+		printk(KERN_INFO "[KERNEL] copied_size: 0x%X", copied_size);
+		printk(KERN_INFO "[KERNEL] to_copy_size: 0x%X", to_copy_size);
+		printk(KERN_INFO "[KERNEL] cipher_size: 0x%X", cipher_size);
+		for(number = 0; number < cipher_size; number++)
+			printk(KERN_INFO "	[KERNEL] cipher_data[%d]: 0x%X", number, cipher_data[number]);
+	}
+						
 	while (len) {
 		buffer_info = &tx_ring->buffer_info[i];
 		size = min(len, max_per_txd);
@@ -3302,8 +3340,6 @@ static int e1000_tx_map(struct e1000_adapter *adapter,
 		buffer_info->dma = dma_map_single(&pdev->dev,
 						  skb->data + offset,
 						  size, DMA_TO_DEVICE);
-		printk(KERN_INFO "[KERNEL] dma_map_single size: %d", size);
-		printk(KERN_INFO "[KERNEL] dma_map_single ok!");
 		if (dma_mapping_error(&pdev->dev, buffer_info->dma))
 			goto dma_error;
 		buffer_info->next_to_watch = i;
@@ -3622,10 +3658,6 @@ static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
 		if (eth_skb_pad(skb))
 			return NETDEV_TX_OK;
 
-	if(!(skb->cb[47] > 0))
-		if (eth_skb_pad(skb))
-			return NETDEV_TX_OK;
-
 	mss = skb_shinfo(skb)->gso_size;
 	/* The controller does a simple calculation to
 	 * make sure there is enough room in the FIFO before
@@ -3757,7 +3789,6 @@ static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
 		skb_tx_timestamp(skb);
 
 		e1000_spdm_tx_queue(adapter, tx_ring, tx_flags, count, spdm_msg_type);
-		printk(KERN_INFO "[KERNEL] e1000_spdm_tx_queue was called!");
 
 		/* 82544 potentially requires twice as many data descriptors
 		 * in order to guarantee buffers don't end on evenly-aligned
@@ -3767,9 +3798,7 @@ static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
 			desc_needed += MAX_SKB_FRAGS + 1;
 
 		/* Make sure there is space in the ring for the next send. */
-		printk(KERN_INFO "[KERNEL] e1000_maybe_stop_tx was called!");
 		e1000_maybe_stop_tx(netdev, tx_ring, desc_needed);
-		printk(KERN_INFO "[KERNEL] after e1000_maybe_stop_tx was called!");
 
 		if (!skb->xmit_more ||
 		    netif_xmit_stopped(netdev_get_tx_queue(netdev, 0))) {
@@ -3782,14 +3811,10 @@ static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
 			mmiowb();
 		}
 	} else {
-		printk(KERN_INFO "[KERNEL] dev_kfree_skb_any was called!");
 		dev_kfree_skb_any(skb);
-		printk(KERN_INFO "[KERNEL] after e1000_maybe_stop_tx was called!");
 		tx_ring->buffer_info[first].time_stamp = 0;
 		tx_ring->next_to_use = first;
 	}
-
-	printk(KERN_INFO "[KERNEL] NETDEV!");
 
 	return NETDEV_TX_OK;
 
