@@ -1029,7 +1029,7 @@ struct e1000_rx_desc {
     uint8_t status;      /* Descriptor status */
     uint8_t errors;      /* Descriptor Errors */
     uint16_t special;
-	uint8_t spdm_msg_type;	/* 0 = APP, 1 = SPDM */
+	uint64_t spdm_msg_type;	/* 0 = APP, 1 = SPDM */
 };
 
 /* Extended Receive Descriptor */

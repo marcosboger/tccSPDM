@@ -275,7 +275,7 @@ static const uint32_t mac_reg_init[] = {
 };
 
 /* spdm internal variables */
-#define E1000_SPDMDEV_MAX_BUF 4096
+#define E1000_SPDMDEV_MAX_BUF 0x10000 //4096
 
 static QemuMutex e1000_spdm_io_mutex;
 static QemuCond e1000_spdm_io_cond;
@@ -364,7 +364,7 @@ static uint32_t e1000_m_use_responder_capability_flags =
 	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_HBEAT_CAP |
 	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_KEY_UPD_CAP |
 	 SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_HANDSHAKE_IN_THE_CLEAR_CAP |
-	 // SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_PUB_KEY_ID_CAP | /* conflict with SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_CERT_CAP */
+	 //SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_PUB_KEY_ID_CAP | /* conflict with SPDM_GET_CAPABILITIES_RESPONSE_FLAGS_CERT_CAP */
 	 0);
 
 static uint32_t e1000_m_use_capability_flags = 0;
@@ -394,12 +394,6 @@ return_status e1000_spdm_send (
         return RETURN_DEVICE_ERROR;
     }
 
-    //qemu_mutex_lock(&e1000_spdm_io_mutex);
-    //e1000_spdm_buf_size = RequestSize;
-    //memcpy(e1000_spdm_buf, Request, RequestSize);
-    //e1000_spdm_send_is_ready = 1;
-    //qemu_cond_signal(&e1000_spdm_io_cond);
-    //qemu_mutex_unlock(&e1000_spdm_io_mutex);
 	struct iovec iov = {
 		.iov_base = Request,
 		.iov_len = RequestSize,
@@ -603,7 +597,7 @@ void e1000_spdm_server_callback (void* SpdmContext)
 		if (Res) {
 			zero_mem (&Parameter, sizeof(Parameter));
 			Parameter.location = SPDM_DATA_LOCATION_LOCAL;
-			spdm_set_data (SpdmContext, SPDM_DATA_PEER_PUBLIC_ROOT_CERT_HASH, &Parameter, Hash, HashSize);
+			spdm_set_data (SpdmContext, SPDM_DATA_PEER_PUBLIC_ROOT_CERT, &Parameter, Hash, HashSize);
 			// Do not free it.
 		}
 	}
@@ -1209,11 +1203,51 @@ process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
 				tp->cptse = 0;
 				return -1;
 			}
+
+			// Lock e1000_spdm_buf
+			qemu_mutex_lock(&e1000_spdm_io_mutex);
+
+			// Copia mensagem pro buffer
+			printf("[QEMU] copied %d bytes to e1000_spdm_buf\n", tp->size);
+			memcpy(e1000_spdm_buf, tp->data, tp->size);
+			e1000_spdm_buf_size = tp->size;
+
+			// session_id & is_app
+			uint32_t* session_id = malloc(sizeof(uint32_t));
+			*session_id = 0xFFFFFFFF;
+			uint8_t is_app;
+
+			// Size temporário pra não sobrescrever vlan_needed e sum_needed do tx
+			uintn temp_size = tp->size;
+
+			return_status status = spdm_transport_mctp_decode_message(
+					s->spdm_context, 
+					&session_id, 
+					&is_app, 
+					TRUE, 
+					e1000_spdm_buf_size, 
+					e1000_spdm_buf, 
+					&(temp_size), 
+					tp->data
+			);
+			tp->size = temp_size; // cast de 32 pra 16 bits
+
+			if (RETURN_ERROR(status))
+				printf("[QEMU] spdm_transport_mctp_decode_message fail - status: %d\n", status);
+
+			// Unlock
+			qemu_mutex_unlock(&e1000_spdm_io_mutex);
+			printf("[QEMU] tp->size: %02X\n", tp->size);
+			for(i = 0; i < tp->size; i++)
+				printf("%02X ", tp->data[i]);
+			printf("\n");
+
+			// Transmite pacote
 			xmit_seg(s);
 		}
 	}
 
-	// CLeanup
+	// Cleanup
 	tp->tso_frames = 0;
 	tp->sum_needed = 0;
 	tp->vlan_needed = 0;
@@ -1458,6 +1492,7 @@ e1000_spdm_receive_iov(E1000State *s, const struct iovec *iov, int iovcnt, uint8
 			vlan_status = E1000_RXD_STAT_VP;
 			size -= 4;
 		}
+
 	}
 
     rdh_start = s->mac_reg[RDH];
@@ -1468,10 +1503,9 @@ e1000_spdm_receive_iov(E1000State *s, const struct iovec *iov, int iovcnt, uint8
         return -1;
     }
     do {
-		// TODO: verificar o tamanho máximo do buffer pra alocar no DMA
         desc_size = total_size - desc_offset;
-        if (desc_size > s->rxbuf_size) {
-            desc_size = s->rxbuf_size;
+        if (desc_size > s->rxbuf_size - 0x200 * (!spdm_msg_type)) {
+            desc_size = s->rxbuf_size - 0x200 * (!spdm_msg_type);
         }
         base = rx_desc_base(s) + sizeof(desc) * s->mac_reg[RDH];
         pci_dma_read(d, base, &desc, sizeof(desc));
@@ -1483,12 +1517,70 @@ e1000_spdm_receive_iov(E1000State *s, const struct iovec *iov, int iovcnt, uint8
                 size_t iov_copy;
                 hwaddr ba = le64_to_cpu(desc.buffer_addr);
                 size_t copy_size = size - desc_offset;
-                if (copy_size > s->rxbuf_size) {
-                    copy_size = s->rxbuf_size;
+                if (copy_size > s->rxbuf_size - 0x200 * (!spdm_msg_type)) {
+                    copy_size = s->rxbuf_size - 0x200 * (!spdm_msg_type);
                 }
                 do {
                     iov_copy = MIN(copy_size, iov->iov_len - iov_ofs);
-                    pci_dma_write(d, ba, iov->iov_base + iov_ofs, iov_copy);
+
+					if (!spdm_msg_type)
+					{
+						{
+							uint32_t i, j;
+							printf("[QEMU] packet_len: %d\n[QEMU] packet:\n", iov_copy);
+							//for (i = 0; i < iov_copy / 16; ++i)
+							//{
+							//	for (j = 16 * i; j < i + 16; ++j)
+							//		printf("%02X ", ((uint8_t*)iov->iov_base)[j]);
+							//	printf("\n");
+							//}
+							//for (i = 0; i < iov_copy % 16; ++i)
+							//	printf("%02X ", ((uint8_t*)iov->iov_base)[j + i]);
+							//printf("\n");
+							for (i = 0; i < iov_copy; ++i)
+								printf("[QEMU] packet[%d]: %02X\n", i, ((uint8_t*)iov->iov_base)[i]);
+						}
+
+						// Lock no e1000_spdm_buf
+						qemu_mutex_lock(&e1000_spdm_io_mutex);
+
+						// Encriptação de dados
+						e1000_spdm_buf_size = sizeof(e1000_spdm_buf);
+						uint32_t session_id = 0xFFFFFFFF;
+						e1000_spdm_buf_size = sizeof(e1000_spdm_buf);
+						return_status status = spdm_transport_mctp_encode_message(
+								s->spdm_context, 
+								&session_id, 
+								TRUE, 
+								FALSE, 
+								iov_copy,
+								iov->iov_base + iov_ofs,
+								&e1000_spdm_buf_size, 
+								e1000_spdm_buf
+						);
+
+						if (RETURN_ERROR(status))
+						{
+							printf("[QEMU] iov encoding failed - status: %d\n", status);
+						}
+						else
+						{
+							//uint32_t it;
+							//printf("[QEMU] buf_size: %02X\n", e1000_spdm_buf_size);
+							//for (it = 0; it < e1000_spdm_buf_size; ++it)
+							//	printf("[QEMU] enc_buf[%02X]: %02X\n", it, e1000_spdm_buf[it]);
+						}
+
+						printf("[QEMU] next_rxd: %d\n", s->mac_reg[RDH]);
+						pci_dma_write(d, ba, e1000_spdm_buf, e1000_spdm_buf_size);
+						desc_size = e1000_spdm_buf_size;
+
+						// Unlock
+						qemu_mutex_unlock(&e1000_spdm_io_mutex);
+					}
+					else
+						pci_dma_write(d, ba, iov->iov_base + iov_ofs, iov_copy);
+
                     copy_size -= iov_copy;
                     ba += iov_copy;
                     iov_ofs += iov_copy;
@@ -1510,6 +1602,7 @@ e1000_spdm_receive_iov(E1000State *s, const struct iovec *iov, int iovcnt, uint8
         } else { // as per intel docs; skip descriptors with null buf addr
             DBGOUT(RX, "Null RX descriptor!!\n");
         }
+		printf("[QEMU] rx_desc_status: %d\n", desc.status);
         pci_dma_write(d, base, &desc, sizeof(desc));
 
         if (++s->mac_reg[RDH] * sizeof(desc) >= s->mac_reg[RDLEN])

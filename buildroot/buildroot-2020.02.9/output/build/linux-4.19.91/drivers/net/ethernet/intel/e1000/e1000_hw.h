@@ -501,7 +501,7 @@ struct e1000_rx_desc {
 	u8 status;		/* Descriptor status */
 	u8 errors;		/* Descriptor Errors */
 	__le16 special;
-	u8 spdm_msg_type;	/* 0 = APP, 1 = SPDM */
+	__le64 spdm_msg_type;	/* 0 = APP, 1 = SPDM */
 };
 
 /* Receive Descriptor - Extended */
