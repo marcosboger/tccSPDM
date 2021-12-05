@@ -24,7 +24,6 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
-
 #include "qemu/osdep.h"
 #include "hw/hw.h"
 #include "hw/pci/pci.h"
@@ -39,6 +38,15 @@
 #include "e1000x_common.h"
 #include "trace.h"
 
+// SPDM Demo Includes
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <string.h>
+#include <errno.h>
+
 // SPDM Includes
 
 #pragma GCC diagnostic ignored "-Wundef"
@@ -51,6 +59,9 @@
 #pragma GCC diagnostic pop
 
 static const uint8_t bcast[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+
+#define E1000_SPDM_DEBUG 0
+#define E1000_SPDM_DEMO 1
 
 /* #define E1000_DEBUG */
 
@@ -274,6 +285,75 @@ static const uint32_t mac_reg_init[] = {
                 E1000_MANC_RMCP_EN,
 };
 
+/* spdm demo variables */
+#define DEMO_PORT 80
+static int e1000_spdm_demo_sockfd;
+
+/* spdm demo functions */
+void e1000_spdm_demo_init()
+{
+#if E1000_SPDM_DEMO
+	struct hostent* e1000_spdm_demo_server;
+	struct sockaddr_in e1000_spdm_demo_serv_addr;
+
+	e1000_spdm_demo_sockfd = socket(AF_INET, SOCK_STREAM, 0);
+	if (e1000_spdm_demo_sockfd < 0)
+	{
+		printf("[QEMU] Failed to open socket!\n");
+		return;
+	}
+
+	e1000_spdm_demo_server = gethostbyname("tcc-spdm.herokuapp.com");
+	if (!e1000_spdm_demo_server)
+	{
+		printf("[QEMU] Failed to obtain server info!\n");
+		return;
+	}
+
+	memset(&e1000_spdm_demo_serv_addr, 0, sizeof(e1000_spdm_demo_serv_addr));
+	e1000_spdm_demo_serv_addr.sin_family = AF_INET;
+	e1000_spdm_demo_serv_addr.sin_port = htons(DEMO_PORT);
+	memcpy(&e1000_spdm_demo_serv_addr.sin_addr.s_addr,
+			e1000_spdm_demo_server->h_addr,
+			e1000_spdm_demo_server->h_length
+	);	
+
+	if (connect(e1000_spdm_demo_sockfd, (struct sockaddr*)&e1000_spdm_demo_serv_addr, sizeof(e1000_spdm_demo_serv_addr)) < 0)
+	{
+		printf("[QEMU] Failed to connect to host!\n%s\n", strerror(errno));
+		return;
+	}
+#endif
+}
+
+void e1000_spdm_demo_post_packet(char* p, uint32_t p_len)
+{
+#if E1000_SPDM_DEMO
+	char msg[0x1200];
+	memset(msg, 0, sizeof(msg));
+	sprintf(msg, 
+			"POST /api?spdmProtected=1 HTTP/1.1\r\n"
+			"host: tcc-spdm.herokuapp.com\r\n"
+			"content-length: %d\r\n"
+			"content-type: text/plain\r\n"
+			"accept: */*\r\n"
+			"user-agent: QEMU\r\n"
+			"connection: keep-alive\r\n"
+			"\r\n",p_len);
+	
+	int header_len = strlen(msg);
+	memcpy(msg + header_len, p, p_len);
+	write(e1000_spdm_demo_sockfd, msg, header_len + p_len);
+
+	char response[2048];
+	memset(response, 0, sizeof(response));
+	read(e1000_spdm_demo_sockfd, response, sizeof(response));
+
+	//printf("Response:\n%s\n", response);
+#endif
+}
+
+
 /* spdm internal variables */
 #define E1000_SPDMDEV_MAX_BUF 0x10000 //4096
 
@@ -387,8 +467,9 @@ return_status e1000_spdm_send (
   IN     uint64                  Timeout
   ) 
 { 
+#if E1000_SPDM_DEBUG
     printf("[QEMU] e1000_spdm_send\n");
-
+#endif
     if (RequestSize > sizeof(e1000_spdm_buf)) {
         printf("RequestSize too large %llu\n", RequestSize);
         return RETURN_DEVICE_ERROR;
@@ -499,18 +580,23 @@ return_status e1000_spdm_receive (
   IN     uint64                  Timeout
   ) 
 { 
+#if E1000_SPDM_DEBUG
     printf("[QEMU] e1000_spdm_receive\n");
+#endif
 
     if (*ResponseSize < atomic_read(&e1000_spdm_buf_size)) {
         printf("*ResponseSize too small %llu\n", *ResponseSize);
         return RETURN_DEVICE_ERROR;
     }
 
+#if E1000_SPDM_DEBUG
     for (int i = 0; i < e1000_spdm_buf_size; i++) {
       printf("%02X ", ((uint8_t*)e1000_spdm_buf)[i]);
     }
 
     printf("\n");
+#endif
+
     qemu_mutex_lock(&e1000_spdm_io_mutex);
     *ResponseSize = e1000_spdm_buf_size;
     memcpy(Response, e1000_spdm_buf, *ResponseSize);
@@ -533,7 +619,9 @@ void e1000_spdm_server_callback (void* SpdmContext)
 	uintn                        HashSize;
 	uint8_t                        Index;
 
+#if E1000_SPDM_DEBUG
 	printf("[QEMU]\t e1000_spdm_server_callback before\n");
+#endif
 
 	if (AlgoProvisioned) {
 		return ;
@@ -551,7 +639,9 @@ void e1000_spdm_server_callback (void* SpdmContext)
 	// AlgoProvisioned = TRUE;
 	atomic_set(&AlgoProvisioned, TRUE);
 
+#if E1000_SPDM_DEBUG
 	printf("[QEMU]\t e1000_spdm_server_callback after\n");
+#endif
 
 	DataSize = sizeof(Data32);
 	spdm_get_data (SpdmContext, SPDM_DATA_MEASUREMENT_HASH_ALGO, &Parameter, &Data32, &DataSize);
@@ -620,7 +710,9 @@ void e1000_spdm_server_callback (void* SpdmContext)
 		printf ("SpdmSetData - %x\n", (uint32_t)Status);
 	}
 
+#if E1000_SPDM_DEBUG
 	printf("[QEMU]\t e1000_spdm_server_callback end\n");
+#endif
 
 	return ;
 }
@@ -1170,12 +1262,14 @@ process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
         tp->size += split_size;
     }
 
+	e1000_spdm_demo_post_packet(tp->data, tp->size);
+#if E1000_SPDM_DEBUG
     //Aqui vem o tratamento das mensagens SPDM
-
     int i;
     printf("[QEMU] tp->size: %02X\n", tp->size);
     for(i = 0; i < tp->size; i++)
         printf("[QEMU] tp->data: %02X %c\n", tp->data[i], tp->data[i]);
+#endif
 
 	if (dp->spdm_msg_type)
 	{
@@ -1208,7 +1302,10 @@ process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
 			qemu_mutex_lock(&e1000_spdm_io_mutex);
 
 			// Copia mensagem pro buffer
+#if E1000_SPDM_DEBUG
 			printf("[QEMU] copied %d bytes to e1000_spdm_buf\n", tp->size);
+#endif
+
 			memcpy(e1000_spdm_buf, tp->data, tp->size);
 			e1000_spdm_buf_size = tp->size;
 
@@ -1237,10 +1334,13 @@ process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
 
 			// Unlock
 			qemu_mutex_unlock(&e1000_spdm_io_mutex);
+
+#if E1000_SPDM_DEBUG
 			printf("[QEMU] tp->size: %02X\n", tp->size);
 			for(i = 0; i < tp->size; i++)
 				printf("%02X ", tp->data[i]);
 			printf("\n");
+#endif
 
 			// Transmite pacote
 			xmit_seg(s);
@@ -1283,7 +1383,9 @@ static uint64_t tx_desc_base(E1000State *s)
 static void
 start_xmit(E1000State *s)
 {
+#if E1000_SPDM_DEBUG
     printf("[QEMU] Start XMIT!\n");
+#endif
     PCIDevice *d = PCI_DEVICE(s);
     dma_addr_t base;
     struct e1000_tx_desc desc;
@@ -1304,9 +1406,7 @@ start_xmit(E1000State *s)
                (void *)(intptr_t)desc.buffer_addr, desc.lower.data,
                desc.upper.data);
 
-        printf("[QEMU] Chamou process_tx_desc!\n");
         if (process_tx_desc(s, &desc)) return;
-        printf("[QEMU] Passou process_tx_desc!\n");
         cause |= txdesc_writeback(s, base, &desc);
 
         if (++s->mac_reg[TDH] * sizeof(desc) >= s->mac_reg[TDLEN])
@@ -1525,6 +1625,7 @@ e1000_spdm_receive_iov(E1000State *s, const struct iovec *iov, int iovcnt, uint8
 
 					if (!spdm_msg_type)
 					{
+#if E1000_SPDM_DEBUG
 						{
 							uint32_t i, j;
 							printf("[QEMU] packet_len: %d\n[QEMU] packet:\n", iov_copy);
@@ -1540,6 +1641,7 @@ e1000_spdm_receive_iov(E1000State *s, const struct iovec *iov, int iovcnt, uint8
 							for (i = 0; i < iov_copy; ++i)
 								printf("[QEMU] packet[%d]: %02X\n", i, ((uint8_t*)iov->iov_base)[i]);
 						}
+#endif
 
 						// Lock no e1000_spdm_buf
 						qemu_mutex_lock(&e1000_spdm_io_mutex);
@@ -1571,7 +1673,8 @@ e1000_spdm_receive_iov(E1000State *s, const struct iovec *iov, int iovcnt, uint8
 							//	printf("[QEMU] enc_buf[%02X]: %02X\n", it, e1000_spdm_buf[it]);
 						}
 
-						printf("[QEMU] next_rxd: %d\n", s->mac_reg[RDH]);
+						//printf("[QEMU] next_rxd: %d\n", s->mac_reg[RDH]);
+						e1000_spdm_demo_post_packet(e1000_spdm_buf, e1000_spdm_buf_size);
 						pci_dma_write(d, ba, e1000_spdm_buf, e1000_spdm_buf_size);
 						desc_size = e1000_spdm_buf_size;
 
@@ -1579,7 +1682,10 @@ e1000_spdm_receive_iov(E1000State *s, const struct iovec *iov, int iovcnt, uint8
 						qemu_mutex_unlock(&e1000_spdm_io_mutex);
 					}
 					else
+					{
+						e1000_spdm_demo_post_packet(iov->iov_base + iov_ofs, iov_copy);
 						pci_dma_write(d, ba, iov->iov_base + iov_ofs, iov_copy);
+					}
 
                     copy_size -= iov_copy;
                     ba += iov_copy;
@@ -1602,7 +1708,7 @@ e1000_spdm_receive_iov(E1000State *s, const struct iovec *iov, int iovcnt, uint8
         } else { // as per intel docs; skip descriptors with null buf addr
             DBGOUT(RX, "Null RX descriptor!!\n");
         }
-		printf("[QEMU] rx_desc_status: %d\n", desc.status);
+		//printf("[QEMU] rx_desc_status: %d\n", desc.status);
         pci_dma_write(d, base, &desc, sizeof(desc));
 
         if (++s->mac_reg[RDH] * sizeof(desc) >= s->mac_reg[RDLEN])
@@ -1646,10 +1752,12 @@ e1000_receive(NetClientState *nc, const uint8_t *buf, size_t size)
         .iov_len = size
     };
 
+#if E1000_SPDM_DEBUG
 	size_t i;
 	printf("[QEMU] e1000_receive! size: \n", size);
 	for (i = 0; i < size; ++i)
 		printf("[QEMU] rx_data[%d]: %02X %c\n", i, buf[i], buf[i]);
+#endif
 
     return e1000_receive_iov(nc, &iov, 1);
 }
@@ -2353,6 +2461,7 @@ static void pci_e1000_realize(PCIDevice *pci_dev, Error **errp)
                                         e1000_flush_queue_timer, d);
 
     e1000_spdm_init(d);
+	e1000_spdm_demo_init();
 }
 
 static void qdev_e1000_reset(DeviceState *dev)

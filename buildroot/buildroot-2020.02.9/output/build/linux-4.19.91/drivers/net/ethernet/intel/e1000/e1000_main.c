@@ -17,7 +17,7 @@
 
 #include "spdm_temp_emu.c"
 
-#define E1000_SPDM_DEBUG 1
+#define E1000_SPDM_DEBUG 0
 
 #if E1000_SPDM_DEBUG
 #define E1000_SPDM_PRINT(format,  ...) printk(format, ##__VA_ARGS__)
@@ -325,7 +325,9 @@ return_status spdm_e1000_receive_message(IN void *spdm_context,
 
 static int e1000_send_arbitrary_data(struct net_device *netdev, char *some_data, size_t size)
 {
+#if E1000_SPDM_DEBUG
 	printk(KERN_ALERT "[KERNEL] SPDM size: %X", size);
+#endif
 
 	struct sk_buff *skb_spdm;
 	skb_spdm = alloc_skb(size, GFP_KERNEL);
@@ -333,11 +335,13 @@ static int e1000_send_arbitrary_data(struct net_device *netdev, char *some_data,
 	skb_spdm->data_len = 0;
 	skb_spdm->tail = 0;
 	skb_put_data(skb_spdm, some_data, size);
+#if E1000_SPDM_DEBUG
 	printk(KERN_ALERT "[KERNEL] SPDM skb_data_ptr: %x", skb_spdm->data);
 	printk(KERN_ALERT "[KERNEL] SPDM skb_tail_ptr: %x", skb_spdm->tail);
 	int i;
 	for(i = 0; i < size; i++)
 		printk(KERN_ALERT "[KERNEL] SPDM skb_spdm->data[%d] = 0x%02X \n", i, skb_spdm->data[i]);
+#endif
 	e1000_spdm_xmit_frame(skb_spdm, global_spdm_netdev, 1);
 	return 0;
 }
@@ -1741,7 +1745,10 @@ int e1000_open(struct net_device *netdev)
 	ew32(ICS, E1000_ICS_LSC);
 
 	// get_version, get_capabilities, and negotiate_algorithms
+#if E1000_SPDM_DEBUG
 	printk(KERN_INFO "[KERNEL] spdm_init_connection was called!");
+#endif
+
 	status = spdm_init_connection(
 			global_spdm_context,
 			(m_exe_connection & EXE_CONNECTION_VERSION_ONLY) != 0);
@@ -1773,36 +1780,6 @@ int e1000_open(struct net_device *netdev)
 		printk("[KERNEL] spdm_start_session - status: %x \n", (uint32)status);
 		return -1;
 	}
-
-	/*// test encoding
-	uint8 msg[] = {'t', 'e', 's', 't'};
-	uint8 enc_msg[0x1200];
-	uintn enc_msg_size = sizeof(enc_msg);
-
-	status = spdm_transport_mctp_encode_message(global_spdm_context, &global_session_id, 1, 1, sizeof(msg), msg, &enc_msg_size, enc_msg);
-	if (RETURN_ERROR(status))
-		printk("[KERNEL] spdm_encode_secured_message error - %x\n", (uint32)status);
-	else
-	{
-		printk("[KERNEL] enc_msg_size: 0x%x\n", enc_msg_size);
-		int iter;
-		for (iter = 0; iter < enc_msg_size; ++iter)
-			printk("[KERNEL] enc_msg[%d]: 0x%02X\n", iter, enc_msg[iter]);
-	}
-
-	enc_msg[5] = 1;
-	uint8 dec_msg[0x1200];
-	uintn dec_msg_size = sizeof(dec_msg);
-	uint32* ptr_session_id = &global_session_id;
-	status = spdm_transport_mctp_decode_message(global_spdm_context, &ptr_session_id, 1, 1, enc_msg_size, enc_msg, &dec_msg_size, dec_msg);
-	if (RETURN_ERROR(status))
-		printk("[KERNEL] spdm_decode_secured_message error - %x\n", (uint32)status);
-	else
-	{
-		int iter;
-		for (iter = 0; iter < dec_msg_size; ++iter)
-			printk("[KERNEL] dec_msg[%d]: 0x%02X\n", iter, dec_msg[iter]);
-	}*/
 
 	// send an arbitraty message, so last_spdm_request_session_id is set at the responder
 	//uint8 my_msg[] = {MCTP_MESSAGE_TYPE_VENDOR_DEFINED_IANA, 'h', 'e', 'l', 'l', 'o'};
@@ -3326,84 +3303,6 @@ static int e1000_spdm_tx_map(struct e1000_adapter *adapter,
 					i = 0;
 			}
 		}
-		//if (len)
-		//{
-		//	encrypted_size = sizeof(encrypted_message);
-		//	printk("[KERNEL] spdm_mctp_encode inside e1000_spdm_tx_map\n");
-		//	//status = spdm_send_request(global_spdm_context, &global_session_id, !spdm_msg_type, len, skb->data);
-		//	status = ((spdm_context_t *)global_spdm_context)->transport_encode_message(global_spdm_context, &global_session_id, spdm_msg_type ? FALSE : TRUE, TRUE, len, skb->data, &encrypted_size, encrypted_message);
-		//	//status = spdm_transport_mctp_encode_message(global_spdm_context, &global_session_id, !spdm_msg_type, TRUE, len, skb->data, &encrypted_size, encrypted_message);
-		//	if (RETURN_ERROR(status))
-		//	{
-		//		printk("[KERNEL] Error encoding message in skb->data - status %d\n", status);
-		//		return 0;
-		//	}
-		//	uint32_t p;
-		//	printk("[KERNEL] encrypted_size: %d\n[KERNEL] encrypted_message:\n", encrypted_size);
-		//	for (p = 0; p < encrypted_size; ++p)
-		//		printk("[KERNEL] enc_msg[%d]: %02X\n", p, encrypted_message[p]);
-		//}
-
-		//while (encrypted_size) {
-		//	buffer_info = &tx_ring->buffer_info[i];
-		//	size = min(encrypted_size, max_per_txd);
-		//	/* Workaround for Controller erratum --
-		//	 * descriptor for non-tso packet in a linear SKB that follows a
-		//	 * tso gets written back prematurely before the data is fully
-		//	 * DMA'd to the controller
-		//	 */
-		//	if (!skb->data_len && tx_ring->last_tx_tso &&
-		//		!skb_is_gso(skb)) {
-		//		tx_ring->last_tx_tso = false;
-		//		size -= 4;
-		//	}
-
-		//	/* Workaround for premature desc write-backs
-		//	 * in TSO mode.  Append 4-byte sentinel desc
-		//	 */
-		//	if (unlikely(mss && !nr_frags && size == encrypted_size && size > 8))
-		//		size -= 4;
-		//	/* work-around for errata 10 and it applies
-		//	 * to all controllers in PCI-X mode
-		//	 * The fix is to make sure that the first descriptor of a
-		//	 * packet is smaller than 2048 - 16 - 16 (or 2016) bytes
-		//	 */
-		//	if (unlikely((hw->bus_type == e1000_bus_type_pcix) &&
-		//			 (size > 2015) && count == 0))
-		//		size = 2015;
-
-
-		//	/* Workaround for potential 82544 hang in PCI-X.  Avoid
-		//	 * terminating buffers within evenly-aligned dwords.
-		//	 */
-		//	if (unlikely(adapter->pcix_82544 &&
-		//	   !((unsigned long)(skb->data + offset + size - 1) & 4) &&
-		//	   size > 4))
-		//		size -= 4;
-
-
-		//	buffer_info->length = size;
-		//	/* set time_stamp *before* dma to help avoid a possible race */
-		//	buffer_info->time_stamp = jiffies;
-		//	buffer_info->mapped_as_page = false;
-		//	buffer_info->dma = dma_map_single(&pdev->dev,
-		//					  encrypted_message + offset,
-		//					  size, DMA_TO_DEVICE);
-		//	printk(KERN_INFO "[KERNEL] dma_map_single size: %d", size);
-		//	printk(KERN_INFO "[KERNEL] dma_map_single ok!");
-		//	if (dma_mapping_error(&pdev->dev, buffer_info->dma))
-		//		goto dma_error;
-		//	buffer_info->next_to_watch = i;
-
-		//	encrypted_size -= size;
-		//	offset += size;
-		//	count++;
-		//	if (encrypted_size) {
-		//		i++;
-		//		if (unlikely(i == tx_ring->count))
-		//			i = 0;
-		//	}
-		//}
 	}
 	else
 	{
@@ -3452,8 +3351,11 @@ static int e1000_spdm_tx_map(struct e1000_adapter *adapter,
 			buffer_info->dma = dma_map_single(&pdev->dev,
 							  skb->data + offset,
 							  size, DMA_TO_DEVICE);
+#if E1000_SPDM_DEBUG
 			printk(KERN_INFO "[KERNEL] dma_map_single size: %d", size);
 			printk(KERN_INFO "[KERNEL] dma_map_single ok!");
+#endif
+
 			if (dma_mapping_error(&pdev->dev, buffer_info->dma))
 				goto dma_error;
 			buffer_info->next_to_watch = i;
@@ -3470,100 +3372,26 @@ static int e1000_spdm_tx_map(struct e1000_adapter *adapter,
 
 	}
 
+#if E1000_SPDM_DEBUG
 	printk(KERN_INFO "[KERNEL] outside loop ok!");
-
-	//for (f = 0; f < nr_frags; f++)
-	//{
-	//	const struct skb_frag_struct *frag;
-	//	frag = &skb_shinfo(skb)->frags[f];
-
-	//	len = skb_frag_size(frag);
-	//	enc_offset = 0;
-
-	//	struct sk_buff *copy = skb_copy(skb, GFP_KERNEL);
-	//	if (copy)
-	//	{
-	//		while (len)
-	//		{
-	//			enc_batch_size = min(len, 0x800);
-	//		}
-	//	}
-	//}
-
-	//for (f = 0; f < nr_frags; f++) {
-	//	printk(KERN_INFO "[KERNEL] inside for loop!");
-	//	const struct skb_frag_struct *frag;
-	//	unsigned long bufend;
-
-	//	frag = &skb_shinfo(skb)->frags[f];
-	//	len = skb_frag_size(frag);
-	//	offset = 0;
-
-	//	if (len)
-	//	{
-	//		bufend = (unsigned long) page_to_phys(skb_frag_page(frag));
-	//		bufend += offset;
-	//		status = spdm_transport_mctp_encode_message(global_spdm_context, &global_session_id, !spdm_msg_type, TRUE, len, bufend, &encrypted_size, encrypted_message);
-	//		if (RETURN_ERROR(status))
-	//		{
-	//			printk("[KERNEL] Error encoding message in skb_frag - status %d\n", status);
-	//			return 0;
-	//		}
-	//	}
-
-	//	while (encrypted_size) {
-	//		i++;
-	//		if (unlikely(i == tx_ring->count))
-	//			i = 0;
-
-	//		buffer_info = &tx_ring->buffer_info[i];
-	//		size = min(encrypted_size, max_per_txd);
-	//		/* Workaround for premature desc write-backs
-	//		 * in TSO mode.  Append 4-byte sentinel desc
-	//		 */
-	//		if (unlikely(mss && f == (nr_frags-1) &&
-	//		    size == encrypted_size && size > 8))
-	//			size -= 4;
-	//		/* Workaround for potential 82544 hang in PCI-X.
-	//		 * Avoid terminating buffers within evenly-aligned
-	//		 * dwords.
-	//		 */
-	//		bufend = (unsigned long)
-	//			page_to_phys(skb_frag_page(frag));
-	//		bufend += offset + size - 1;
-	//		if (unlikely(adapter->pcix_82544 &&
-	//			     !(bufend & 4) &&
-	//			     size > 4))
-	//			size -= 4;
-
-	//		buffer_info->length = size;
-	//		buffer_info->time_stamp = jiffies;
-	//		buffer_info->mapped_as_page = true;
-	//		buffer_info->dma = skb_frag_dma_map(&pdev->dev, frag,
-	//					offset, size, DMA_TO_DEVICE);
-	//		if (dma_mapping_error(&pdev->dev, buffer_info->dma))
-	//			goto dma_error;
-	//		buffer_info->next_to_watch = i;
-
-	//		len -= size;
-	//		offset += size;
-	//		count++;
-	//	}
-	//}
-
+#endif
 
 	segs = skb_shinfo(skb)->gso_segs ?: 1;
 	/* multiply data chunks by size of headers */
 	bytecount = ((segs - 1) * skb_headlen(skb)) + skb->len;
 
+#if E1000_SPDM_DEBUG
 	printk(KERN_INFO "[KERNEL] tx_ring!");
+#endif
 
 	tx_ring->buffer_info[i].skb = skb;
 	tx_ring->buffer_info[i].segs = segs;
 	tx_ring->buffer_info[i].bytecount = bytecount;
 	tx_ring->buffer_info[first].next_to_watch = i;
 
+#if E1000_SPDM_DEBUG
 	printk(KERN_INFO "[KERNEL] tx_ring ok!");
+#endif
 
 	return count;
 
@@ -3744,46 +3572,10 @@ static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
 	tx_ring = adapter->tx_ring;
 
 	int teste = 0;
-
-	//for(teste = 0; teste < 48; teste++){
-	//		printk(KERN_INFO "	cb[%d]: %02X", teste, skb->cb[teste]);
-			//buffer_start[teste] = buffer_start[teste] + 1;
-	//	}
-
-	//struct sk_buff *skb_spdm;
-	//skb_spdm = alloc_skb(len, GFP_KERNEL);
-	//skb_spdm = skb;
-	//printk(KERN_INFO "	headlen: %d", len);
-	//skb_put(skb, 5);
-	//printk(KERN_INFO "	headlen + 5: %d", skb_headlen(skb));
-	//len = skb_headlen(skb);
-	//skb_spdm->data = skb->data;
-	//int len_spdm = skb_headlen(skb_spdm);
-	//int teste = 0;
-
-	/*for (teste = 0; teste < len; teste++){
-		if(teste == len - 1 && skb->data_len == 0){
-			skb->data[teste] = 'R';
-		}
-		if(teste == len - 2 && skb->data_len == 0){
-			skb->data[teste] = 'E';
-		}
-		if(teste == len - 3 && skb->data_len == 0){
-			skb->data[teste] = 'G';
-		}
-		if(teste == len - 4 && skb->data_len == 0){
-			skb->data[teste] = 'O';
-		}
-		if(teste == len - 5 && skb->data_len == 0){
-			skb->data[teste] = 'B';
-		}
-	}*/	
-
-	//skb = skb_spdm;
-
 	/* Alteração para bugar pacote saindo */
 
 	unsigned char *buffer_start = skb->data;
+#if E1000_SPDM_DEBUG
 	printk(KERN_INFO "[KERNEL]\t Inside e1000_spdm_xmit_frame!");
 	printk(KERN_INFO "[KERNEL]\t len:%02X!", len);
    	//printk(KERN_INFO "    DEBUG KERNEL: len:%d", len);
@@ -3798,6 +3590,7 @@ static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
 	 */
 
 	printk(KERN_INFO "[KERNEL]\t ETH_ZLEN:%02X!", ETH_ZLEN);
+#endif
 	
 	// TODO: verificar se o driver original retornava NETDEV_TX_OK aqui
 	if(!spdm_msg_type)
@@ -3935,7 +3728,9 @@ static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
 		skb_tx_timestamp(skb);
 
 		e1000_spdm_tx_queue(adapter, tx_ring, tx_flags, count, spdm_msg_type);
+#if E1000_SPDM_DEBUG
 		printk(KERN_INFO "[KERNEL] e1000_spdm_tx_queue was called!");
+#endif
 
 		/* 82544 potentially requires twice as many data descriptors
 		 * in order to guarantee buffers don't end on evenly-aligned
@@ -3945,13 +3740,16 @@ static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
 			desc_needed += MAX_SKB_FRAGS + 1;
 
 		/* Make sure there is space in the ring for the next send. */
+#if E1000_SPDM_DEBUG
 		printk(KERN_INFO "[KERNEL] e1000_maybe_stop_tx was called!");
+#endif
 		e1000_maybe_stop_tx(netdev, tx_ring, desc_needed);
+#if E1000_SPDM_DEBUG
 		printk(KERN_INFO "[KERNEL] after e1000_maybe_stop_tx was called!");
+#endif
 
 		if (!skb->xmit_more ||
 		    netif_xmit_stopped(netdev_get_tx_queue(netdev, 0))) {
-			//printk(KERN_INFO "	DEBUG: big if was called!");
 			writel(tx_ring->next_to_use, hw->hw_addr + tx_ring->tdt);
 			/* we need this if more than one processor can write to
 			 * our tail at a time, it synchronizes IO on IA64/Altix
@@ -3967,7 +3765,9 @@ static netdev_tx_t e1000_spdm_xmit_frame(struct sk_buff *skb,
 		tx_ring->next_to_use = first;
 	}
 
+#if E1000_SPDM_DEBUG
 	printk(KERN_INFO "[KERNEL] NETDEV!");
+#endif
 
 	return NETDEV_TX_OK;
 
@@ -5121,8 +4921,10 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 
 			if (RETURN_ERROR(ret_stat))
 				printk(KERN_INFO "[KERNEL] Error decoding packet - status %d\n", ret_stat);
+#if E1000_SPDM_DEBUG
 			else
 				printk(KERN_INFO "[KERNEL] Packet decoded successfully\n");
+#endif
 
 			//data = dec_message;
 			memcpy(data, dec_message, dec_message_size);
@@ -5131,8 +4933,10 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 
 		skb = e1000_copybreak(adapter, buffer_info, length, data);
 
+#if E1000_SPDM_DEBUG
 		printk(KERN_INFO "[KERNEL] e1000_clean_rx_irq was called, status: %d", status);
 		printk(KERN_INFO "[KERNEL] next_to_clean: %d\n", i);
+#endif
 
 		if (!skb) {
 			unsigned int frag_len = e1000_frag_len(adapter);
@@ -5156,10 +4960,12 @@ static bool e1000_clean_rx_irq(struct e1000_adapter *adapter,
 		unsigned char *buffer_start = skb->data;
 		int teste = 0;
 
+#if E1000_SPDM_DEBUG
 		printk(KERN_INFO "[KERNEL] length = %d\n", length);
 		for(teste = 0; teste < length; teste++){
 			printk(KERN_INFO "[KERNEL] data = %02X %c\n", buffer_start[teste], buffer_start[teste]);
 		}
+#endif
 
 		if (++i == rx_ring->count)
 			i = 0;
@@ -5229,10 +5035,12 @@ process_skb:
 
 			e1000_receive_skb(adapter, status, rx_desc->special, skb);
 		}
+#if E1000_SPDM_DEBUG
 		else
 		{
 			printk(KERN_INFO "[KERNEL] SPDM message received through e1000_clean_rx_irq\n");
 		}
+#endif
 
 next_desc:
 		rx_desc->status = 0;
