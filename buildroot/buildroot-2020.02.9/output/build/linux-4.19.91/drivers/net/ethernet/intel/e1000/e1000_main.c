@@ -231,6 +231,8 @@ uint8 requester_public_certificate_chain_data[] = { 0x64, 0x0E, 0x00, 0x00, 0xFA
 uintn requester_public_certificate_chain_hash_size;
 uint8 *requester_public_certificate_chain_hash_data;
 
+uint8_t* e1000_spdm_buffers_to_free[0x100];
+
 #define TEST_PSK_DATA_STRING "TestPskData"
 #define TEST_PSK_HINT_STRING "TestPskHint"
 
@@ -374,10 +376,12 @@ void* e1000_init_spdm(void) {
 	// uintn hash_size;
 	spdm_version_number_t spdm_version;
 
-	spdm_context = (void *)kmalloc(spdm_get_context_size(), GFP_KERNEL);
+	spdm_context = (void *)kmalloc(spdm_get_context_size(), GFP_ATOMIC);
 	if (spdm_context == NULL) {
 		return NULL;
 	}
+	
+	memset(e1000_spdm_buffers_to_free, 0, sizeof(e1000_spdm_buffers_to_free));
 
 	spdm_init_context(spdm_context);
 	spdm_register_device_io_func(spdm_context, spdm_e1000_send_message,
@@ -2380,6 +2384,11 @@ static void e1000_clean_tx_ring(struct e1000_adapter *adapter,
 	for (i = 0; i < tx_ring->count; i++) {
 		buffer_info = &tx_ring->buffer_info[i];
 		e1000_unmap_and_free_tx_resource(adapter, buffer_info);
+		if (e1000_spdm_buffers_to_free[i])
+		{
+			kfree(e1000_spdm_buffers_to_free[i]);
+			e1000_spdm_buffers_to_free[i] = 0;
+		}
 	}
 
 	netdev_reset_queue(adapter->netdev);
@@ -3244,15 +3253,6 @@ static int e1000_spdm_tx_map(struct e1000_adapter *adapter,
 		volatile uintn enc_size;
 		volatile return_status status;
 
-		enc_size = 0xE00 + 0x200;
-		enc_message = kcalloc(enc_size, sizeof(uint8_t), GFP_KERNEL);
-
-		if (!enc_message)
-		{
-			printk(KERN_INFO "[KERNEL] Failed to allocate encryption buffer\n");
-			return 0;
-		}
-
 		volatile struct sk_buff *copy;
 		if (skb_is_nonlinear(skb))
 		{
@@ -3271,6 +3271,18 @@ static int e1000_spdm_tx_map(struct e1000_adapter *adapter,
 		len = skb_headlen(copy);
 		while (len)
 		{
+			// Aloca buffer de encriptação
+			enc_size = 0xE00 + 0x200;
+			enc_message = kcalloc(enc_size, sizeof(uint8_t), GFP_ATOMIC);
+			if (!enc_message)
+			{
+				printk(KERN_INFO "[KERNEL] Failed to allocate encryption buffer\n");
+				return 0;
+			}
+
+			// Salva buffer para poder dar free
+			e1000_spdm_buffers_to_free[i] = enc_message;
+
 			// Encripta parte da mensagem
 			enc_batch_size = min(len, 0xE00);
 			status = ((spdm_context_t *)global_spdm_context)->transport_encode_message(global_spdm_context, &global_session_id, TRUE, TRUE, enc_batch_size, copy->data + enc_offset, &enc_size, enc_message);
@@ -3409,6 +3421,11 @@ dma_error:
 		buffer_info = &tx_ring->buffer_info[i];
 		printk(KERN_INFO "[KERNEL] e1000_unmap_and_free_tx_resource was called!");
 		e1000_unmap_and_free_tx_resource(adapter, buffer_info);
+		if (e1000_spdm_buffers_to_free[i])
+		{
+			kfree(e1000_spdm_buffers_to_free[i]);
+			e1000_spdm_buffers_to_free[i] = 0;
+		}
 	}
 
 	return 0;
@@ -4353,8 +4370,12 @@ static bool e1000_clean_tx_irq(struct e1000_adapter *adapter,
 
 			}
 
-
 			e1000_unmap_and_free_tx_resource(adapter, buffer_info);
+			if (e1000_spdm_buffers_to_free[i])
+			{
+				kfree(e1000_spdm_buffers_to_free[i]);
+				e1000_spdm_buffers_to_free[i] = 0;
+			}
 		
 
 			tx_desc->upper.data = 0;

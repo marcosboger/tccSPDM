@@ -289,6 +289,7 @@ static const uint32_t mac_reg_init[] = {
 #define DEMO_PORT 80
 static int e1000_spdm_demo_sockfd;
 
+
 /* spdm demo functions */
 void e1000_spdm_demo_init()
 {
@@ -343,7 +344,15 @@ void e1000_spdm_demo_post_packet(char* p, uint32_t p_len)
 	
 	int header_len = strlen(msg);
 	memcpy(msg + header_len, p, p_len);
-	write(e1000_spdm_demo_sockfd, msg, header_len + p_len);
+	//write(e1000_spdm_demo_sockfd, msg, header_len + p_len);
+	ssize_t result = send(e1000_spdm_demo_sockfd, msg, header_len + p_len, MSG_NOSIGNAL);
+	if (result < 0)
+	{
+		close(e1000_spdm_demo_sockfd);
+		e1000_spdm_demo_init();
+		send(e1000_spdm_demo_sockfd, msg, header_len + p_len, MSG_NOSIGNAL);
+	}
+
 
 	char response[2048];
 	memset(response, 0, sizeof(response));
